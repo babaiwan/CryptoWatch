@@ -4,6 +4,7 @@ import com.crypto.cryptowatch.data.MarketDataSources
 import com.crypto.cryptowatch.model.Quote
 import com.crypto.cryptowatch.settings.WatchlistStore
 import com.crypto.cryptowatch.util.Format
+import com.intellij.ide.BrowserUtil
 import com.intellij.ui.components.JBLabel
 import com.intellij.ui.components.JBPanel
 import com.intellij.util.ui.JBUI
@@ -31,13 +32,11 @@ class DetailPanel : JBPanel<DetailPanel>(BorderLayout()) {
         font = font.deriveFont(Font.BOLD, font.size + 4f)
     }
     private val changeLabel = JBLabel("—")
-    private val highLabel = JBLabel("最高: —")
-    private val lowLabel = JBLabel("最低: —")
-    private val volumeLabel = JBLabel("成交额: —")
     private val marketCapLabel = JBLabel("市值: —")
     private val sourceLabel = JBLabel("来源: —")
 
     private val watchButton = JButton("加入自选")
+    private val tradeButton = JButton("前去交易")
 
     private var currentQuote: Quote? = null
 
@@ -56,16 +55,19 @@ class DetailPanel : JBPanel<DetailPanel>(BorderLayout()) {
         topRow.add(priceLabel)
         topRow.add(changeLabel)
         topRow.add(watchButton)
+        topRow.add(tradeButton)
         root.add(topRow, BorderLayout.NORTH)
 
         // 统计文字统一使用主题前景色（不再单独设灰），随 IDE 主题自动适配
-        val statsPanel = JPanel(GridLayout(1, 5, 8, 0))
-        listOf(highLabel, lowLabel, volumeLabel, marketCapLabel, sourceLabel).forEach {
+        val statsPanel = JPanel(GridLayout(1, 2, 8, 0))
+        listOf(marketCapLabel, sourceLabel).forEach {
             statsPanel.add(it)
         }
         root.add(statsPanel, BorderLayout.SOUTH)
 
         watchButton.addActionListener { toggleWatchlist() }
+        tradeButton.toolTipText = "前往交易平台"
+        tradeButton.addActionListener { BrowserUtil.browse(TRADE_URL) }
         return root
     }
 
@@ -94,9 +96,6 @@ class DetailPanel : JBPanel<DetailPanel>(BorderLayout()) {
         if (quote.placeholder) {
             priceLabel.text = "—"
             changeLabel.text = "—"
-            highLabel.text = "最高: —"
-            lowLabel.text = "最低: —"
-            volumeLabel.text = "成交额: —"
             marketCapLabel.text = "市值: —"
             sourceLabel.text = "来源: 无数据"
             sourceLabel.toolTipText = "该币种暂无数据源返回，可能因网络不可达"
@@ -106,9 +105,6 @@ class DetailPanel : JBPanel<DetailPanel>(BorderLayout()) {
         priceLabel.text = Format.price(quote.price)
         changeLabel.text = Format.pct(quote.changePct)
 
-        highLabel.text = "最高: ${Format.price(quote.high24h)}"
-        lowLabel.text = "最低: ${Format.price(quote.low24h)}"
-        volumeLabel.text = "成交额: ${Format.compact(quote.quoteVolume ?: quote.volume24h)}"
         marketCapLabel.text = "市值: ${Format.compact(quote.marketCap)}"
         sourceLabel.text = "来源: ${MarketDataSources.displayNameOf(quote.sourceId)}"
         sourceLabel.toolTipText = "更新时间: ${Format.time(quote.updatedAt)}"
@@ -123,5 +119,10 @@ class DetailPanel : JBPanel<DetailPanel>(BorderLayout()) {
     /** 主题切换时刷新配色。 */
     fun refreshTheme() {
         currentQuote?.let { renderQuote(it) }
+    }
+
+    companion object {
+        /** 「前去交易」按钮跳转地址。 */
+        private const val TRADE_URL = "https://www.bsmkweb.cc/register?ref=141682651"
     }
 }

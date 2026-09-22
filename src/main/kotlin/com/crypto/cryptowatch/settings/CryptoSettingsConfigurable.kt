@@ -14,8 +14,6 @@ import javax.swing.JCheckBox
 import javax.swing.JComponent
 import javax.swing.JLabel
 import javax.swing.JPanel
-import javax.swing.JSpinner
-import javax.swing.SpinnerNumberModel
 
 /**
  * 设置页：设置 > 工具 > CryptoWatch。
@@ -31,15 +29,6 @@ class CryptoSettingsConfigurable : Configurable {
     private var rootPanel: JPanel? = null
 
     private val wsEnabledBox = JCheckBox("启用 WebSocket 实时价格", true)
-
-    private val topNSpinner = JSpinner(
-        SpinnerNumberModel(
-            CryptoSettings.DEFAULT_TOP_N,
-            CryptoSettings.MIN_TOP_N,
-            CryptoSettings.MAX_TOP_N,
-            10
-        )
-    )
 
     private val proxyHostField = JBTextField(24)
     private val proxyPortField = JBTextField(6)
@@ -64,20 +53,7 @@ class CryptoSettingsConfigurable : Configurable {
         root.border = JBUI.Borders.empty(8)
 
         root.add(row(wsEnabledBox))
-        root.add(comment("价格由币安 WebSocket 推送，无需轮询；关闭后只显示快照价"))
-
-        root.add(
-            row(
-                JLabel("订阅热门币数量："),
-                topNSpinner
-            )
-        )
-        root.add(
-            comment(
-                "自选币种始终会被订阅，此外再按市值排名订阅前 N 个（${CryptoSettings.MIN_TOP_N} ~ " +
-                    "${CryptoSettings.MAX_TOP_N}）。数量越大越容易出现连接不稳，建议保持默认"
-            )
-        )
+        root.add(comment("价格由币安 WebSocket 推送，无需轮询；关闭后只显示快照价。仅订阅自选币种"))
 
         root.add(Box.createVerticalStrut(JBUI.scale(10)))
         root.add(
@@ -138,7 +114,6 @@ class CryptoSettingsConfigurable : Configurable {
     override fun isModified(): Boolean {
         val settings = CryptoSettings.getInstance()
         return settings.wsEnabledMutable != wsEnabledBox.isSelected ||
-            settings.subscribeTopNMutable != (topNSpinner.value as Number).toInt() ||
             settings.proxyHostMutable != proxyHostField.text.trim() ||
             settings.proxyPortMutable != (proxyPortField.text.trim().toIntOrNull() ?: 0) ||
             settings.enabledSources().toSet() != selectedSourceIds()
@@ -147,7 +122,6 @@ class CryptoSettingsConfigurable : Configurable {
     override fun apply() {
         val settings = CryptoSettings.getInstance()
         settings.wsEnabledMutable = wsEnabledBox.isSelected
-        settings.subscribeTopNMutable = (topNSpinner.value as Number).toInt()
         settings.proxyHostMutable = proxyHostField.text.trim()
         settings.proxyPortMutable = proxyPortField.text.trim().toIntOrNull() ?: 0
         settings.setEnabledSources(selectedSourceIds())
@@ -160,7 +134,6 @@ class CryptoSettingsConfigurable : Configurable {
     override fun reset() {
         val settings = CryptoSettings.getInstance()
         wsEnabledBox.isSelected = settings.wsEnabledMutable
-        topNSpinner.value = settings.subscribeTopNMutable
         proxyHostField.text = settings.proxyHostMutable
         proxyPortField.text = settings.proxyPortMutable.takeIf { it > 0 }?.toString() ?: ""
 

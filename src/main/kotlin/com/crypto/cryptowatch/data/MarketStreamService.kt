@@ -25,10 +25,9 @@ import java.util.concurrent.TimeUnit
  * - 本服务负责把两者合成 [DataSnapshot] 并广播给订阅者，同时对高频推送做**合并节流**，
  *   避免每秒几十次地刷新 Swing 表格。
  *
- * 订阅集合的推导规则（对应「自选 + 前 N 个热门币」）：
- * - 自选列表里的全部币种始终订阅，保证自选一定有实时价；
- * - 另外按 REST 返回顺序（即市值排名）取前 [CryptoSettings.subscribeTopN] 个币种；
- * - 总订阅数受 [MAX_STREAMS] 上限约束——实测订阅数越多，币安 WS 越容易出现
+ * 订阅集合的推导规则（只订阅自选币种）：
+ * - 只订阅自选列表里的币种，保证自选一定有实时价，同时把 WS 流量压到最低；
+ * - 总订阅数受 [MAX_BASES] 上限约束——实测订阅数越多，币安 WS 越容易出现
  *   "连上但收不到数据"的静默失效，因此必须有上限。
  *
  * 连接与生命周期：只在工具窗口需要时（[start] / [stop]）建连，没有订阅者时立即断开，
@@ -255,20 +254,16 @@ class MarketStreamService {
         pendingResubscribe = scheduler.schedule({ applySubscriptions() }, RESUBSCRIBE_DEBOUNCE_MS, TimeUnit.MILLISECONDS)
     }
 
-    /** 按「自选 + 市值前 N」推导订阅流，并把结果推给 WS 客户端。 */
+    /** 按「自选」推导订阅流，并把结果推给 WS 客户端（只订阅自选币种）。 */
     private fun applySubscriptions() {
         if (!started || !CryptoSettings.getInstance().wsEnabled) return
 
-        val settings = CryptoSettings.getInstance()
         val bases = LinkedHashSet<String>()
 
-        // 1) 自选优先，保证一定拿到实时价
+        // 只订阅自选，保证自选一定有实时价，同时避免无谓的 WS 流量
         WatchlistStore.getInstance().allKeys().forEach { key ->
             baseOf(key)?.let(bases::add)
         }
-
-        // 2) 再按市值顺序补足前 N 个热门币
-        restQuotes.take(settings.subscribeTopN).forEach { bases += it.base.upper() }
 
         // 注意：每个币种会占 2 条流（trade + miniTicker），因此这里限制的是「币种数」。
         val limited = bases.filter { it.isNotBlank() }.take(MAX_BASES)
