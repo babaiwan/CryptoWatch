@@ -8,7 +8,9 @@ plugins {
 }
 
 group = "com.crypto"
-version = "1.0.0"
+// 版本号必须递增：IDE 会拒绝安装与已装版本号相同的包
+// （报错 "plugin already contains version X in channel"）。
+version = "1.0.1"
 
 repositories {
     mavenCentral()
@@ -63,6 +65,9 @@ intellijPlatform {
 
         changeNotes = """
             <ul>
+                <li>1.0.1 - 修复自选不更新: 手动加入的币种（如 ZEC）会立即出现在列表中；
+                    修复实时推送数虚高（只增不减的缓存），刷新时严格按当前自选重新订阅；
+                    界面精简: 去掉市值与来源、去掉「列表更新于」，信息框压缩为单行.</li>
                 <li>1.0.0 - 实时行情看盘: 多数据源互备、自选、合约、走势图与 K 线.</li>
             </ul>
         """.trimIndent()
