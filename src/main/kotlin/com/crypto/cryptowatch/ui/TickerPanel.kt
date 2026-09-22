@@ -180,7 +180,9 @@ class TickerPanel(
         hintLabel.text = when {
             allQuotes.isEmpty() && filtered.isNotEmpty() -> "未获取到行情，以下为自选占位"
             allQuotes.isEmpty() && emptyHint != null -> emptyHint
-            else -> "自选 ${displayed.size} 个 · 实时 ${allQuotes.size} 条行情"
+            // 这里是「列表/搜索范围内的行情条数」，并非实时推送数，
+            // 实时推送数由状态栏按当前订阅集合展示，避免两处口径互相矛盾。
+            else -> "自选 ${displayed.size} 个 · 行情 ${allQuotes.size} 条"
         }
         hintLabel.toolTipText = if (allQuotes.isEmpty()) emptyHint else null
     }
@@ -189,7 +191,12 @@ class TickerPanel(
      * 扁平币种集合：
      * - 只保留稳定币计价（USDT/USD）的币对，并过滤掉稳定币本身的币对，避免列表被上千条噪音淹没；
      * - 跨数据源/跨类目按基础币种去重（同币种在现货与合约出现时只保留一条）；
-     * - 若完全没有行情（例如所有数据源都不可达），用自选键生成占位行，保证列表与搜索不为空。
+     * - **总是**为「自选里有、但当前没有任何数据源返回」的币种补一条占位行。
+     *
+     * 最后一点很关键：早期实现只在「完全没有行情」时才补占位行，导致手动加入一个
+     * 暂未被数据源返回的币种（例如 ZEC）时列表毫无变化——自选确实写进去了，
+     * 但在「只看自选」的过滤下该币种既不在行情里、又不会被补成占位行，
+     * 于是表现成「点了添加但自选列表没更新」。
      */
     private fun universe(): List<Quote> {
         val live = allQuotes.asSequence()
@@ -197,22 +204,30 @@ class TickerPanel(
             .filter { it.base.upper() !in STABLE_BASES }
             .distinctBy { it.base.upper() }
             .toList()
-        if (live.isNotEmpty()) return live
 
-        return WatchlistStore.getInstance().allKeys().map { key ->
-            val base = key.substringBefore('/')
-            val quote = key.substringAfter('/', "USDT")
-            Quote(
-                id = key,
-                symbol = key,
-                base = base,
-                quote = quote,
-                price = 0.0,
-                changePct = 0.0,
-                sourceId = "-",
-                placeholder = true
-            )
-        }.sortedBy { it.displaySymbol }
+        // 已有行情的自选键（统一规范化后比较，使 USD 与 USDT 视为同一计价）
+        val liveKeys = live.mapTo(HashSet<String>()) { WatchlistStore.normalize(it.canonicalKey) }
+
+        val placeholders = WatchlistStore.getInstance().allKeys()
+            .filter { it !in liveKeys }
+            .map { key -> placeholderOf(key) }
+
+        return live + placeholders
+    }
+
+    /** 用自选键生成占位行（价格等数值为 0，表格渲染为 "-"）。 */
+    private fun placeholderOf(key: String): Quote {
+        val normalized = WatchlistStore.normalize(key)
+        return Quote(
+            id = normalized,
+            symbol = normalized,
+            base = normalized.substringBefore('/'),
+            quote = normalized.substringAfter('/', "USDT"),
+            price = 0.0,
+            changePct = 0.0,
+            sourceId = "-",
+            placeholder = true
+        )
     }
 
     fun repaintTable() {
@@ -235,11 +250,15 @@ class TickerPanel(
         onSelect(quote)
     }
 
-    /** 通过输入框添加任意币种到自选（允许尚未被数据源返回的币种）。 */
+    /**
+     * 通过输入框添加任意币种到自选（允许尚未被数据源返回的币种）。
+     *
+     * 只输入币种本身即可（例如 `ZEC`），默认按 `/USDT` 计价；也接受 `ZEC/USDT` 这类完整写法。
+     */
     fun promptAddToWatchlist() {
         val input = Messages.showInputDialog(
             project,
-            "输入币种，例如 BTC/USDT 或 BTCUSDT。",
+            "输入币种，例如 ZEC（默认按 ZEC/USDT 计价），也可直接写 ZEC/USDT。",
             "添加自选",
             null
         )?.trim() ?: return
@@ -249,8 +268,17 @@ class TickerPanel(
             notifyStatus("无法识别的币种格式: $input")
             return
         }
-        WatchlistStore.getInstance().add(MarketCategory.SPOT, key)
-        notifyStatus("$key 已加入自选")
+        val normalized = WatchlistStore.normalize(key)
+        val added = WatchlistStore.getInstance().add(MarketCategory.SPOT, normalized)
+        if (!added) {
+            notifyStatus("$normalized 已在自选中")
+            return
+        }
+        // 该币种可能尚未被任何数据源返回：此时列表里会以占位行出现，价格等列为 "-"。
+        val hasLive = allQuotes.any { WatchlistStore.normalize(it.canonicalKey) == normalized }
+        notifyStatus(
+            if (hasLive) "$normalized 已加入自选" else "$normalized 已加入自选（暂无实时行情，等待数据源返回）"
+        )
     }
 
     private fun normalizeSymbol(input: String): String? {

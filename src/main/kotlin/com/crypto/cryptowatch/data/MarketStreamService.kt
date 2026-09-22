@@ -69,7 +69,14 @@ class MarketStreamService {
 
     private val wsClient = BinanceWsClient(object : BinanceWsClient.Listener {
         override fun onQuotes(quotes: List<Quote>) {
-            quotes.forEach { liveQuotes[it.base.upper()] = it }
+            // 只接受「当前正在订阅」的币种：服务端对 UNSUBSCRIBE 的处理存在延迟，
+            // 若不过滤，退订后的残留推送会重新写回缓存，让实时数再次虚高。
+            val allowed = subscribedBases
+            if (allowed.isEmpty()) return
+            quotes.forEach {
+                val base = it.base.upper()
+                if (base in allowed) liveQuotes[base] = it
+            }
             scheduleEmit()
         }
 
@@ -82,6 +89,15 @@ class MarketStreamService {
 
     /** base（大写）→ 最新实时报价。 */
     private val liveQuotes = ConcurrentHashMap<String, Quote>()
+
+    /**
+     * 当前生效的订阅币种集合（等于 [liveQuotes] 的允许范围）。
+     *
+     * 由 [applySubscriptions] 写入，[onQuotes] 只接受其中的币种，
+     * 保证「实时条数」与「当前自选」永远一一对应。
+     */
+    @Volatile
+    private var subscribedBases: Set<String> = emptySet()
 
     /** REST 拉到的币种列表（保持源返回顺序，即市值排名）。 */
     @Volatile
@@ -201,9 +217,28 @@ class MarketStreamService {
         listeners.remove(listener)
     }
 
-    /** 手动刷新：重新拉一次 REST 列表（用于"刷新"按钮）。 */
+    /**
+     * 手动刷新：先按当前自选**重新下发订阅**，再拉一次 REST 列表。
+     *
+     * 两步都要做，且顺序固定：
+     * - 重新订阅保证「刷新后订阅的正是当前几个自选币种」，而不是沿用历史订阅；
+     * - 再拉 REST 则让列表与市值也刷新一遍。
+     */
     fun refreshNow() {
+        refreshSubscription(force = true)
         refreshRest()
+    }
+
+    /**
+     * 立即（跳过去抖）按当前自选重算订阅集合。
+     *
+     * @param force 见 [BinanceWsClient.updateStreams]：清空本地已订阅记录后全量重发。
+     */
+    fun refreshSubscription(force: Boolean = false) {
+        if (!started) return
+        pendingResubscribe?.cancel(false)
+        pendingResubscribe = null
+        applySubscriptions(force)
     }
 
     // ------------------------------------------------------------------ REST（币种列表 + 市值）
@@ -242,34 +277,58 @@ class MarketStreamService {
         wsClient.stop()
         wsState = null
         wsMessage = ""
+        // 同步清空「已订阅」与实时缓存，避免关闭 WS 后状态栏仍残留旧的实时条数
+        subscribedBases = emptySet()
         liveQuotes.clear()
         streamCount = 0
     }
 
     // ------------------------------------------------------------------ 订阅集合推导
 
-    private fun scheduleResubscribe() {
+    private fun scheduleResubscribe(force: Boolean = false) {
         if (!started) return
         pendingResubscribe?.cancel(false)
-        pendingResubscribe = scheduler.schedule({ applySubscriptions() }, RESUBSCRIBE_DEBOUNCE_MS, TimeUnit.MILLISECONDS)
+        pendingResubscribe = scheduler.schedule(
+            { applySubscriptions(force) },
+            RESUBSCRIBE_DEBOUNCE_MS,
+            TimeUnit.MILLISECONDS
+        )
     }
 
-    /** 按「自选」推导订阅流，并把结果推给 WS 客户端（只订阅自选币种）。 */
-    private fun applySubscriptions() {
+    /**
+     * 当前应当订阅的基础币种：由自选推导（统一大写、去重、受 [MAX_BASES] 上限约束）。
+     *
+     * 注意上限约束的是「币种数」——每个币种会占 2 条流（trade + miniTicker）。
+     */
+    private fun desiredBases(limit: Int = MAX_BASES): Set<String> =
+        WatchlistStore.getInstance().allKeys()
+            .asSequence()
+            .mapNotNull { baseOf(it) }
+            .filter { it.isNotBlank() }
+            .take(limit)
+            .toSet()
+
+    /**
+     * 按「自选」推导订阅流，并把结果推给 WS 客户端（只订阅自选币种）。
+     *
+     * 这里是订阅集合的**唯一事实来源**：除了下发订阅，还负责把实时缓存 [liveQuotes]
+     * 收敛到「当前自选」范围内。早先的实现只订阅、从不收缩缓存，于是曾经订阅过的
+     * 币种会永久留在缓存里——状态栏显示的「已推送 N 个」只增不减，
+     * 列表里也会冒出早已不再订阅的幽灵行。
+     */
+    private fun applySubscriptions(force: Boolean = false) {
         if (!started || !CryptoSettings.getInstance().wsEnabled) return
 
-        val bases = LinkedHashSet<String>()
-
         // 只订阅自选，保证自选一定有实时价，同时避免无谓的 WS 流量
-        WatchlistStore.getInstance().allKeys().forEach { key ->
-            baseOf(key)?.let(bases::add)
-        }
+        val bases = desiredBases()
+        streamCount = bases.size
 
-        // 注意：每个币种会占 2 条流（trade + miniTicker），因此这里限制的是「币种数」。
-        val limited = bases.filter { it.isNotBlank() }.take(MAX_BASES)
-        streamCount = limited.size
-        if (limited.isEmpty()) {
-            // REST 还没回来时不发订阅，等列表到位后会自动重算
+        if (bases.isEmpty()) {
+            // 自选为空时必须显式下发取消订阅：否则服务端仍会持续推送旧流，
+            // 缓存里那些币种也就永远清不掉。
+            subscribedBases = emptySet()
+            wsClient.updateStreams(emptyList())
+            syncLiveQuotes(emptySet())
             emitNow()
             return
         }
@@ -279,14 +338,28 @@ class MarketStreamService {
         // - `@miniTicker`：每秒一次，提供 24h 涨跌幅与成交额（trade 帧不含这些字段）。
         // 之所以不能只订阅 miniTicker：币安对该流固定 1 秒推送一次，1 秒内多数币种价格不变，
         // 看起来就像「价格几乎不动」。
-        val streams = ArrayList<String>(limited.size * 2)
-        limited.forEach { base ->
+        val streams = ArrayList<String>(bases.size * 2)
+        bases.forEach { base ->
             val symbol = "${base.lower()}usdt"
             streams += "$symbol@trade"
             streams += "$symbol@miniTicker"
         }
-        wsClient.updateStreams(streams)
+        // 先收窄允许范围，再下发订阅：这样即便服务端对 UNSUBSCRIBE 有延迟，
+        // 残留推送也会在 [onQuotes] 里被丢弃。
+        subscribedBases = bases
+        wsClient.updateStreams(streams, force)
+        syncLiveQuotes(bases)
         emitNow()
+    }
+
+    /**
+     * 把实时缓存收敛到 [bases]：不再订阅的币种立即从缓存移除。
+     *
+     * 不这样做的话缓存只增不减，`liveCount` 会随使用时间持续变大，
+     * 用户就会看到「只自选了几个币，却提示实时 200 条」这种自相矛盾的状态。
+     */
+    private fun syncLiveQuotes(bases: Set<String>) {
+        liveQuotes.keys.retainAll { it in bases }
     }
 
     /** 从 "BTC/USDT" 之类的键里取出基础币种。 */

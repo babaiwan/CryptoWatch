@@ -1,6 +1,5 @@
 package com.crypto.cryptowatch.ui
 
-import com.crypto.cryptowatch.data.MarketDataSources
 import com.crypto.cryptowatch.model.Quote
 import com.crypto.cryptowatch.settings.WatchlistStore
 import com.crypto.cryptowatch.util.Format
@@ -11,7 +10,6 @@ import com.intellij.util.ui.JBUI
 import java.awt.BorderLayout
 import java.awt.FlowLayout
 import java.awt.Font
-import java.awt.GridLayout
 import javax.swing.JButton
 import javax.swing.JComponent
 import javax.swing.JPanel
@@ -20,7 +18,8 @@ import javax.swing.SwingConstants
 /**
  * 选中币种的精简信息框。
  *
- * 按需求去掉了 K 线图与周期切换，只保留核心数字，占用高度很小。
+ * 按需求去掉了 K 线图、周期切换、市值与来源，只保留「币种 / 最新价 / 24h 涨跌 + 操作按钮」
+ * 一行内容，占用高度最小；更新时间改为悬停提示，不再占用界面空间。
  */
 class DetailPanel : JBPanel<DetailPanel>(BorderLayout()) {
 
@@ -32,11 +31,9 @@ class DetailPanel : JBPanel<DetailPanel>(BorderLayout()) {
         font = font.deriveFont(Font.BOLD, font.size + 4f)
     }
     private val changeLabel = JBLabel("—")
-    private val marketCapLabel = JBLabel("市值: —")
-    private val sourceLabel = JBLabel("来源: —")
 
-    private val watchButton = JButton("加入自选")
-    private val tradeButton = JButton("前去交易")
+    private val watchButton = JButton("自选")
+    private val tradeButton = JButton("交易")
 
     private var currentQuote: Quote? = null
 
@@ -47,28 +44,20 @@ class DetailPanel : JBPanel<DetailPanel>(BorderLayout()) {
 
     // ------------------------------------------------------------------ 布局
 
+    /** 单行布局：币种 / 最新价 / 24h 涨跌 / 操作按钮，尽量不占高度。 */
     private fun buildContent(): JComponent {
-        val root = JPanel(BorderLayout())
+        val row = JPanel(FlowLayout(FlowLayout.LEFT, 8, 0))
 
-        val topRow = JPanel(FlowLayout(FlowLayout.LEFT, 8, 0))
-        topRow.add(titleLabel)
-        topRow.add(priceLabel)
-        topRow.add(changeLabel)
-        topRow.add(watchButton)
-        topRow.add(tradeButton)
-        root.add(topRow, BorderLayout.NORTH)
-
-        // 统计文字统一使用主题前景色（不再单独设灰），随 IDE 主题自动适配
-        val statsPanel = JPanel(GridLayout(1, 2, 8, 0))
-        listOf(marketCapLabel, sourceLabel).forEach {
-            statsPanel.add(it)
-        }
-        root.add(statsPanel, BorderLayout.SOUTH)
+        row.add(titleLabel)
+        row.add(priceLabel)
+        row.add(changeLabel)
+        row.add(watchButton)
+        row.add(tradeButton)
 
         watchButton.addActionListener { toggleWatchlist() }
         tradeButton.toolTipText = "前往交易平台"
         tradeButton.addActionListener { BrowserUtil.browse(TRADE_URL) }
-        return root
+        return row
     }
 
     // ------------------------------------------------------------------ 数据
@@ -91,23 +80,22 @@ class DetailPanel : JBPanel<DetailPanel>(BorderLayout()) {
     private fun renderQuote(quote: Quote) {
         titleLabel.text = quote.displaySymbol
         val inWatchlist = WatchlistStore.getInstance().contains(quote.category, quote.canonicalKey)
-        watchButton.text = if (inWatchlist) "移出自选" else "加入自选"
+        watchButton.text = if (inWatchlist) "已自选" else "自选"
+        watchButton.toolTipText = if (inWatchlist) "点击移出自选" else "点击加入自选"
 
         if (quote.placeholder) {
             priceLabel.text = "—"
             changeLabel.text = "—"
-            marketCapLabel.text = "市值: —"
-            sourceLabel.text = "来源: 无数据"
-            sourceLabel.toolTipText = "该币种暂无数据源返回，可能因网络不可达"
+            titleLabel.toolTipText = "该币种暂无数据源返回，可能因网络不可达"
+            priceLabel.toolTipText = null
             return
         }
 
         priceLabel.text = Format.price(quote.price)
         changeLabel.text = Format.pct(quote.changePct)
-
-        marketCapLabel.text = "市值: ${Format.compact(quote.marketCap)}"
-        sourceLabel.text = "来源: ${MarketDataSources.displayNameOf(quote.sourceId)}"
-        sourceLabel.toolTipText = "更新时间: ${Format.time(quote.updatedAt)}"
+        // 更新时间不再占据界面空间，改为悬停查看
+        titleLabel.toolTipText = "更新时间: ${Format.time(quote.updatedAt)}"
+        priceLabel.toolTipText = "更新时间: ${Format.time(quote.updatedAt)}"
     }
 
     private fun toggleWatchlist() {
@@ -122,7 +110,7 @@ class DetailPanel : JBPanel<DetailPanel>(BorderLayout()) {
     }
 
     companion object {
-        /** 「前去交易」按钮跳转地址。 */
+        /** 「交易」按钮跳转地址。 */
         private const val TRADE_URL = "https://www.bsmkweb.cc/register?ref=141682651"
     }
 }

@@ -126,13 +126,19 @@ class BinanceWsClient(private val listener: Listener) {
      *
      * 连接已建立时立即发送增量 SUBSCRIBE / UNSUBSCRIBE；未建立时仅记录，
      * 待本次或下次连接成功后统一订阅。
+     *
+     * @param force 为 true 时丢弃本地「已订阅」记录并重发全部订阅，
+     *              用于「刷新列表」这类希望严格按当前自选重新订阅的场景。
+     *              目标集合为空时保持普通增量语义（正好退化为取消全部旧订阅），
+     *              否则会清掉本地记录却不下发 UNSUBSCRIBE，与服务端状态不一致。
      */
-    fun updateStreams(streams: Collection<String>) {
+    fun updateStreams(streams: Collection<String>, force: Boolean = false) {
         val target = streams.map { it.lower() }.toSet()
         desired.clear()
         desired.addAll(target)
 
         val current = socket ?: return
+        if (force && target.isNotEmpty()) subscribed.clear()
         val toAdd = desired.filter { it !in subscribed }
         val toRemove = subscribed.filter { it !in desired }
 

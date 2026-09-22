@@ -82,7 +82,7 @@ class MarketToolWindow(
         val panel = JPanel(FlowLayout(FlowLayout.LEFT, 4, 2))
 
         panel.add(JButton("刷新列表").apply {
-            toolTipText = "重新拉取币种列表与市值（价格由 WebSocket 实时推送，无需手动刷新）"
+            toolTipText = "按当前自选重新订阅实时行情，并重新拉取币种列表与市值"
             addActionListener {
                 statusLabel.text = "刷新中…"
                 streamService.refreshNow()
@@ -106,6 +106,9 @@ class MarketToolWindow(
         tickerPanel.setEmptyHint(if (snapshot.quotes.isEmpty()) buildEmptyHint(snapshot) else null)
         detailPanel.refreshQuoteSnapshot(snapshot.quotes)
         updateStatusLine(snapshot)
+        // 失败原因改为悬停查看，不再在界面上堆一排来源名
+        sourceStatusLabel.toolTipText =
+            snapshot.failures.joinToString("\n") { "${it.sourceId}: ${it.message}" }.ifEmpty { null }
     }
 
     /** 全部数据源都失败时的可读提示。 */
@@ -126,42 +129,40 @@ class MarketToolWindow(
         val state = snapshot?.wsState
         val live = snapshot?.liveCount ?: liveCount
 
-        sourceStatusLabel.text = buildSourceText(snapshot, state, live)
-        sourceStatusLabel.toolTipText = snapshot?.failures?.joinToString("\n") { "${it.sourceId}: ${it.message}" }
+        sourceStatusLabel.text = buildSourceText(snapshot, state)
 
-        val updated = snapshot?.restFetchedAt?.takeIf { it > 0 }
-            ?.let { "${(System.currentTimeMillis() - it) / 1000}s 前" } ?: "-"
-        val mode = if (settings.wsEnabled) "WebSocket 实时" else "REST 快照"
-        statusLabel.text = "$mode · 实时 $live 个 · 列表更新于 $updated · 共 ${lastQuotes.size} 条"
+        val mode = if (settings.wsEnabled) "实时" else "快照"
+        // 注意：自选数量取自选本身，而不是 lastQuotes（那是全量行情，约 400 条）
+        val watchCount = WatchlistStore.getInstance().allKeys().size
+        statusLabel.text = "$mode · 自选 $watchCount · 推送 $live"
     }
 
-    /** 左侧状态：优先展示 WS 连接状态，其次展示 REST 数据源健康度。 */
+    /**
+     * 左侧状态：只保留一句最简状态。
+     *
+     * 连接状态具体原因（重连次数、失败来源等）一律放进悬停提示，
+     * 避免状态栏出现一长串文字把界面挤乱。
+     */
     private fun buildSourceText(
         snapshot: MarketStreamService.DataSnapshot?,
-        state: BinanceWsClient.ConnectionState?,
-        live: Int
+        state: BinanceWsClient.ConnectionState?
     ): String {
-        if (snapshot == null) return "启动中…"
+        if (snapshot == null) return "启动中"
 
-        val wsText = when (state) {
-            null -> return restText(snapshot)
-            BinanceWsClient.ConnectionState.CONNECTED -> "WS 已连接"
-            BinanceWsClient.ConnectionState.CONNECTING -> "WS 连接中"
-            BinanceWsClient.ConnectionState.RECONNECTING ->
-                "WS ${snapshot.wsMessage.ifBlank { "重连中" }}（断线期间用快照价兜底）"
-
-            BinanceWsClient.ConnectionState.STOPPED -> return restText(snapshot)
+        return when (state) {
+            null -> restText(snapshot)
+            BinanceWsClient.ConnectionState.CONNECTED -> "已连接"
+            BinanceWsClient.ConnectionState.CONNECTING -> "连接中"
+            BinanceWsClient.ConnectionState.RECONNECTING -> "重连中"
+            BinanceWsClient.ConnectionState.STOPPED -> restText(snapshot)
         }
-        return "$wsText · 订阅 ${snapshot.streamCount} 个 · 已推送 $live 个"
     }
 
+    /** 未启用 WebSocket 时，退化为只显示数据源健康度。 */
     private fun restText(snapshot: MarketStreamService.DataSnapshot): String {
         val total = snapshot.sourceResults.size
-        if (total == 0) return "正在拉取币种列表…"
-        val ok = snapshot.successCount
-        val text = "数据源 $ok/$total 正常"
-        val failed = snapshot.failures
-        return if (failed.isEmpty()) text else "$text（${failed.joinToString { it.sourceId }} 失败）"
+        if (total == 0) return "加载中"
+        return "数据源 ${snapshot.successCount}/$total"
     }
 
     // ------------------------------------------------------------------ 设置 / 生命周期
