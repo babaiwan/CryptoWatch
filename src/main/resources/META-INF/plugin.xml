@@ -1,0 +1,85 @@
+<!-- Plugin Configuration File. Read more: https://plugins.jetbrains.com/docs/intellij/plugin-configuration-file.html -->
+<idea-plugin>
+    <id>com.crypto.CryptoWatch</id>
+
+    <name>CryptoWatch</name>
+
+    <vendor url="https://github.com/">CryptoWatch</vendor>
+
+    <description><![CDATA[
+        在 IDE 里直接看加密货币行情，写代码不用切浏览器。<br>
+        <br>
+        <b>核心特性</b>
+        <ul>
+            <li><b>WebSocket 毫秒级实时价</b>：价格来自币安 WebSocket
+                （<code>data-stream.binance.vision</code>）的<b>逐笔成交流（<code>@trade</code>）</b>，
+                每当市场上有成交就立即推送，因此价格会持续跳动；<b>不做轮询、无需手动刷新</b>。
+                同时叠加 24h 精简行情流提供涨跌幅与成交额。该域名在受限网络下仍可连通；
+                断线会自动重连（指数退避），连接长时间收不到推送也会自动重建。</li>
+            <li><b>自选 + 热门币订阅</b>：自选列表里的币种始终订阅实时价，其余按市值排名订阅前 N 个
+                （默认 40，可在设置中调整），因此开箱即可看到主流币的实时报价。</li>
+            <li><b>完整币种列表</b>：币种列表与市值来自 CoinLore 聚合接口
+                （<code>api.coinlore.net</code>，普通公网站点，通常无需代理即可访问），
+                低频拉取后与实时价合并，因此既能搜索全市场，又能看到实时价格。</li>
+            <li><b>失败可读</b>：数据源不可用时，列表上方会直接显示具体原因，
+                并提示检查网络或代理，不再只留一片空白。</li>
+            <li><b>只看自选</b>：列表默认且始终只展示自选币种（默认内置 BTC/ETH/SOL/BNB），
+                双击任意行即可加入/移出自选，搜索框可在自选范围内快速定位。</li>
+            <li><b>精简信息小框</b>：选中币种即可看到最新价、24h 涨跌、成交额与市值。</li>
+            <li><b>复用 IDE 代理</b>：直接使用 IDE 自身的 HTTP 代理设置，WebSocket 长连接同样遵循，
+                无需重复配置；也支持在插件设置里单独指定代理。</li>
+            <li><b>自选列表</b>：支持手动输入任意币种加入自选，数据落盘持久化。</li>
+            <li><b>跟随 IDE 主题</b>：文字统一使用 IDE 前景色，亮色/暗色主题下均清晰可读。</li>
+        </ul>
+        <b>使用</b>：右侧边栏打开 <code>CryptoWatch</code> 工具窗口，价格会自动实时刷新；
+        「加入自选」用于输入新币种，双击列表行可移出自选；
+        订阅范围、数据源与代理在 <code>设置 > 工具 > CryptoWatch</code> 中调整。<br>
+        <br>
+        <b>兼容性</b>：兼容 IntelliJ Platform 2020.3 及以上版本（含 IDEA / PyCharm / WebStorm 等）。
+    ]]></description>
+
+    <depends>com.intellij.modules.platform</depends>
+
+    <extensions defaultExtensionNs="com.intellij">
+        <!-- 关键兼容点：应用级服务必须在这里显式注册。
+             `@Service` 注解式注册是较新平台（约 2022.3 起）才支持的写法，
+             老版本 IDE（2020.3 等）根本不会扫描该注解，getService() 会返回 null，
+             于是 MarketToolWindow 构造时立即抛 NPE，工具窗口内容创建失败 → 表现为一片空白。
+             显式 <applicationService> 在所有版本上都有效，且与注解注册并不冲突。 -->
+        <applicationService
+            serviceInterface="com.crypto.cryptowatch.settings.CryptoSettings"
+            serviceImplementation="com.crypto.cryptowatch.settings.CryptoSettings"/>
+        <applicationService
+            serviceInterface="com.crypto.cryptowatch.settings.WatchlistStore"
+            serviceImplementation="com.crypto.cryptowatch.settings.WatchlistStore"/>
+        <applicationService
+            serviceInterface="com.crypto.cryptowatch.data.MarketService"
+            serviceImplementation="com.crypto.cryptowatch.data.MarketService"/>
+        <applicationService
+            serviceInterface="com.crypto.cryptowatch.data.MarketStreamService"
+            serviceImplementation="com.crypto.cryptowatch.data.MarketStreamService"/>
+
+        <toolWindow
+            id="CryptoWatch"
+            anchor="right"
+            secondary="false"
+            icon="/META-INF/pluginIcon.svg"
+            factoryClass="com.crypto.cryptowatch.ui.MarketToolWindowFactory"/>
+
+        <!-- 使用 implementation 而非 instance 属性：instance 是较新平台才支持的写法，
+             老版本 IDE（2020.3）只认 implementation。 -->
+        <applicationConfigurable
+            id="com.crypto.cryptowatch.settings"
+            parentId="tools"
+            displayName="CryptoWatch"
+            implementation="com.crypto.cryptowatch.settings.CryptoSettingsConfigurable"/>
+
+        <notificationGroup id="CryptoWatch" displayType="BALLOON" isLogByDefault="true"/>
+
+        <applicationListeners>
+            <listener
+                class="com.crypto.cryptowatch.ui.CryptoThemeListener"
+                topic="com.intellij.ide.ui.LafManagerListener"/>
+        </applicationListeners>
+    </extensions>
+</idea-plugin>
