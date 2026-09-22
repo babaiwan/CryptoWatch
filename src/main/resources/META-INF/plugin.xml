@@ -6,8 +6,49 @@
 
     <vendor url="https://github.com/">CryptoWatch</vendor>
 
-    <description><![CDATA[
-        在 IDE 里直接看加密货币行情，写代码不用切浏览器。<br>
+    <description><![CDATA[CryptoWatch brings real-time cryptocurrency market data right into your IDE,
+        so you can follow the market without switching to a browser while coding.<br>
+        <br>
+        <b>Key Features</b>
+        <ul>
+            <li><b>Millisecond real-time WebSocket prices</b>: prices come from the Binance WebSocket
+                service (<code>data-stream.binance.vision</code>) via the <b>trade stream
+                (<code>@trade</code>)</b>, so every executed trade pushes an update and prices keep
+                ticking &mdash; <b>no polling, no manual refresh</b>. A 24h mini-ticker stream is merged
+                on top to provide change percentage and turnover. This domain stays reachable even on
+                restricted networks; dropped connections reconnect automatically with exponential
+                backoff, and idle connections are rebuilt.</li>
+            <li><b>Watchlist plus top-coin subscriptions</b>: coins in your watchlist are always
+                subscribed to real-time prices, and the remaining slots follow the top coins by market
+                cap (40 by default, configurable in settings), so major pairs are live out of the box.</li>
+            <li><b>Full coin list</b>: the coin list and market caps come from the CoinLore aggregate API
+                (<code>api.coinlore.net</code>, an ordinary public site that usually needs no proxy).
+                It is fetched at a low frequency and merged with live prices, so you can search the whole
+                market while still seeing real-time quotes.</li>
+            <li><b>Readable failures</b>: when a data source is unavailable, the concrete reason is shown
+                above the list together with a hint to check your network or proxy, instead of leaving a
+                blank panel.</li>
+            <li><b>Watchlist-only view</b>: the list shows only your watchlist by default and always
+                (BTC/ETH/SOL/BNB are preloaded). Double-click any row to add or remove it, and use the
+                search box to locate coins quickly inside the watchlist.</li>
+            <li><b>Compact info panel</b>: select a coin to see its latest price, 24h change, turnover and
+                market cap.</li>
+            <li><b>Reuses the IDE proxy</b>: the IDE's own HTTP proxy settings are used directly and are
+                respected by WebSocket long connections too, so nothing has to be configured twice;
+                a dedicated proxy can also be set in the plugin settings.</li>
+            <li><b>Persistent watchlist</b>: type any coin symbol manually to add it, and the data is
+                persisted to disk.</li>
+            <li><b>Follows the IDE theme</b>: text uses the IDE foreground color and stays legible in both
+                light and dark themes.</li>
+        </ul>
+        <b>Usage</b>: open the <code>CryptoWatch</code> tool window in the right sidebar; prices refresh
+        automatically in real time. Use "Add to Watchlist" to enter a new coin and double-click a row to
+        remove it from the watchlist. Subscription scope, data sources and proxy are configured under
+        <code>Settings > Tools > CryptoWatch</code>.<br>
+        <br>
+        <b>Compatibility</b>: IntelliJ Platform 2020.3 and later (IDEA / PyCharm / WebStorm, etc.).<br>
+        <hr>
+        <b>CryptoWatch 简介</b>：在 IDE 里直接看加密货币行情，写代码不用切浏览器。<br>
         <br>
         <b>核心特性</b>
         <ul>
