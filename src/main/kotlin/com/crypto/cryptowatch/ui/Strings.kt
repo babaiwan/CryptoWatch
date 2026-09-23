@@ -31,7 +31,7 @@ internal object Strings {
         "category.top" to "Market cap",
 
         // ------------------------------------------------------------ 数据源
-        "source.ws" to "Binance live (WS)",
+        "source.ws" to "Binance Futures (WS)",
         "source.binance.spot" to "Binance Spot",
         "source.binance.futures" to "Binance Futures",
         "source.okx.spot" to "OKX Spot",
@@ -149,7 +149,7 @@ internal object Strings {
         "category.top" to "市值榜",
 
         // ------------------------------------------------------------ 数据源
-        "source.ws" to "Binance 实时(WS)",
+        "source.ws" to "Binance 合约(WS)",
         "source.binance.spot" to "Binance 现货",
         "source.binance.futures" to "Binance 合约",
         "source.okx.spot" to "OKX 现货",

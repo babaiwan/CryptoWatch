@@ -12,10 +12,12 @@ import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.components.Service
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.ScheduledExecutorService
 import java.util.concurrent.ScheduledFuture
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * 行情流服务（应用级单例）：把「REST 币种列表」与「WebSocket 实时价」合成一份可持续推送的快照。
@@ -73,6 +75,28 @@ class MarketStreamService {
         Executors.newSingleThreadScheduledExecutor { r ->
             Thread(r, "CryptoWatch-Stream").apply { isDaemon = true }
         }
+
+    /**
+     * REST 拉取专用执行器——**必须独立于 [scheduler]**。
+     *
+     * [scheduler] 是**单线程**，而 [MarketService.fetchREST] 会**阻塞数秒**
+     * （多源并发 + 整体超时 12 秒，CoinLore 还要串行翻 4 页）。
+     * 一旦把它丢进 [scheduler]，这个单线程就被占满，排在它后面的
+     * [applySubscriptions]（下发订阅）与 [scheduleEmit]（广播快照）会全部被推迟。
+     *
+     * 由此产生的症状极具迷惑性：**WebSocket 已经连接（状态栏显示「已连接」），
+     * 但「推送」长期为 0**。原因是 [subscribedBases] 还没被写入，
+     * [onQuotes] 会把收到的每一帧都当成"不在订阅范围内"直接丢弃。
+     *
+     * 这里把阻塞 IO 移出调度线程，[scheduler] 只保留轻量的状态更新与派发。
+     */
+    private val restExecutor: ExecutorService =
+        Executors.newSingleThreadExecutor { r ->
+            Thread(r, "CryptoWatch-Rest").apply { isDaemon = true }
+        }
+
+    /** REST 单飞标记：为 true 表示已有一次拉取在路上。 */
+    private val restInFlight = AtomicBoolean(false)
 
     private val listeners = CopyOnWriteArrayList<Listener>()
 
@@ -138,7 +162,6 @@ class MarketStreamService {
     /** 当前有多少个工具窗口在使用本服务。 */
     private var refCount = 0
     private var pendingEmit: ScheduledFuture<*>? = null
-    private var pendingRest: ScheduledFuture<*>? = null
     private var pendingResubscribe: ScheduledFuture<*>? = null
     private var restTimer: ScheduledFuture<*>? = null
 
@@ -195,8 +218,7 @@ class MarketStreamService {
         runCatching { WatchlistStore.getInstance().removeListener(watchlistListener) }
         restTimer?.cancel(false)
         restTimer = null
-        pendingRest?.cancel(false)
-        pendingRest = null
+        restInFlight.set(false)
         pendingResubscribe?.cancel(false)
         pendingResubscribe = null
         pendingEmit?.cancel(false)
@@ -267,22 +289,29 @@ class MarketStreamService {
     private fun refreshRest() {
         if (!started) return
         // 单飞：若已有一次 REST 拉取在路上，跳过本次，避免重复请求
-        if (pendingRest?.isDone == false) return
+        if (!restInFlight.compareAndSet(false, true)) return
 
-        pendingRest = scheduler.schedule({
+        // 阻塞的拉取放在 [restExecutor]，绝不能在 [scheduler] 上执行（见 restExecutor 注释）
+        restExecutor.execute rest@{
             val snapshot = try {
                 MarketService.getInstance().fetchREST()
             } catch (t: Throwable) {
-                return@schedule
+                null
+            } finally {
+                restInFlight.set(false)
             }
-            if (!started) return@schedule
-            restQuotes = snapshot.quotes
-            restResults = snapshot.sourceResults
-            restFetchedAt = snapshot.fetchedAt
-            // 新的列表可能带来新的热门币，需要重新推导订阅集合
-            scheduleResubscribe()
-            emitNow()
-        }, 0, TimeUnit.MILLISECONDS)
+            if (snapshot == null) return@rest
+            // 结果并回状态时再切到 [scheduler]，保证与订阅/广播串行、无竞态
+            scheduler.execute {
+                if (!started) return@execute
+                restQuotes = snapshot.quotes
+                restResults = snapshot.sourceResults
+                restFetchedAt = snapshot.fetchedAt
+                // 新的列表可能带来新的热门币，需要重新推导订阅集合
+                scheduleResubscribe()
+                emitNow()
+            }
+        }
     }
 
     // ------------------------------------------------------------------ WebSocket（实时价格）
@@ -347,11 +376,17 @@ class MarketStreamService {
         }
     }
 
-    /** 从 WS 客户端隔离的流名（形如 `btcusdt@trade`）反推出基础币种。 */
+    /**
+     * 从 WS 客户端隔离的流名（形如 `takeusdt@aggTrade`、`btcusd_perp@miniTicker`）
+     * 反推出基础币种。
+     *
+     * 统一交给 [Symbols.splitStream] 处理，而不是在这里硬编 `indexOf("usdt@")`：
+     * 合约存在币本位代码（`BTCUSD_PERP`），用固定字符串反推会把计价部分算进币种名，
+     * 导致状态栏的"无实时行情"计数与实际对不上。
+     */
     private fun rejectedBases(): Set<String> =
         wsClient.rejectedStreams().mapNotNullTo(HashSet()) { stream ->
-            val idx = stream.indexOf("usdt@")
-            if (idx <= 0) null else stream.substring(0, idx).upper()
+            Symbols.splitStream(stream)?.first
         }
 
     /**
@@ -380,15 +415,16 @@ class MarketStreamService {
         }
 
         // 每个币种订阅两条流，各司其职：
-        // - `@trade`：逐笔成交，毫秒级推送，负责「价格实时跳动」；
-        // - `@miniTicker`：每秒一次，提供 24h 涨跌幅与成交额（trade 帧不含这些字段）。
+        // - `@aggTrade`：逐笔成交，毫秒级推送，负责「价格实时跳动」。
+        //   注意合约的成交流名是 **aggTrade**，现货才叫 trade，写错会静默收不到数据；
+        // - `@miniTicker`：每秒一次，提供 24h 涨跌幅与成交额（成交帧不含这些字段）。
         // 之所以不能只订阅 miniTicker：币安对该流固定 1 秒推送一次，1 秒内多数币种价格不变，
         // 看起来就像「价格几乎不动」。
         val streams = ArrayList<String>(bases.size * 2)
         bases.forEach { base ->
             // 统一由 [Symbols.binanceStream] 生成流名：它在拼装前会再校验一次符号，
             // 任何非法组合都返回 null 并被跳过，绝不让脏数据到达服务端。
-            Symbols.binanceStream(base, suffix = "trade")?.let(streams::add)
+            Symbols.binanceStream(base, suffix = "aggTrade")?.let(streams::add)
             Symbols.binanceStream(base, suffix = "miniTicker")?.let(streams::add)
         }
         // 先收窄允许范围，再下发订阅：这样即便服务端对 UNSUBSCRIBE 有延迟，

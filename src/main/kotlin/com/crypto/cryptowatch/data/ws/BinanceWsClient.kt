@@ -5,6 +5,7 @@ import com.crypto.cryptowatch.model.MarketCategory
 import com.crypto.cryptowatch.model.Quote
 import com.crypto.cryptowatch.ui.I18n
 import com.crypto.cryptowatch.util.IdeProxyAware
+import com.crypto.cryptowatch.util.Symbols
 import com.crypto.cryptowatch.util.lower
 import com.crypto.cryptowatch.util.proxyIfPresent
 import com.crypto.cryptowatch.util.upper
@@ -24,11 +25,16 @@ import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 
 /**
- * 币安 WebSocket 行情客户端（只读公开行情通道）。
+ * 币安**合约（U 本位永续）** WebSocket 行情客户端（只读公开行情通道）。
  *
  * 为什么用 WebSocket：受限网络下币安的 REST 域名（`api.binance.com`）不可达，
- * 但其市场数据专用域名 `data-stream.binance.vision` 的 WebSocket 可以连通，
- * 于是用「一条长连接 + 服务端推送」替代轮询，价格更实时且几乎不产生额外流量。
+ * 但其市场数据 WebSocket 域名可以连通，于是用「一条长连接 + 服务端推送」替代轮询，
+ * 价格更实时且几乎不产生额外流量。
+ *
+ * **为什么从现货切到合约**：现货通道只能覆盖现货币对，而大量只上线了合约的山寨币
+ * （例如 TAKE）在现货根本不存在交易对，订阅后永远拿不到数据。合约通道覆盖面明显更广
+ * （同一币种通常先上合约后上现货），且对不存在的交易对**不回 error、不断开连接**，
+ * 只表现为「不推送」，因此连稳定性也更好。
  *
  * 实测得到的三个关键约束（直接决定了本类的实现方式）：
  * 1. **握手会被随机重置**：同一地址连续建连可能失败（同一 host 上 3 次里失败 2 次很常见），
@@ -36,16 +42,21 @@ import java.util.concurrent.atomic.AtomicInteger
  * 2. **订阅数越大越容易静默失活**：订阅几十个流时可能"握手成功、订阅回执正常，
  *    但此后不再推送任何数据帧"，只靠 onError/onClose 无法察觉，
  *    因此额外设有静默看门狗（[SILENCE_TIMEOUT_SECONDS] 内没有数据帧即主动断线重连）；
- * 3. **非法交易对会让服务端直接断开连接**：若把不存在的交易对（例如 `000USDT`）
- *    写进 SUBSCRIBE，服务端回一条 error 回执后即关闭连接；客户端自动重连后又下发同一批
- *    非法流，于是形成「连上→断开→重连」的死循环，界面上就永久停在「重连中」。
- *    这里通过三步根治：解析订阅回执（[handleSubscriptionResult]）识别被拒流、
- *    把被拒流加入 [rejected] 并在后续订阅中永久跳过（[quarantine]），
- *    并主动触发一次"干净"的重连让剩余合法流立即恢复。
+ * 3. **非法交易对的处理方式与现货不同**：合约网关对不存在的交易对（例如 `000usdt`）
+ *    只回 `{"result":null,"id":1}` 并静默不推送，**不会**像现货那样回 error 并断开连接。
+ *    虽然因此不会出现「连上→断开→重连」的死循环，但也意味着「连接正常却收不到数据」
+ *    更难被察觉，所以本地依然要在源头过滤非法流名（见 [Symbols.binanceStream]）。
+ *    为兼容历史脏数据与现货时代的行为，[handleSubscriptionResult] / [quarantine] 的
+ *    error 分支予以保留：一旦服务端真的回了 error，同样会被隔离并重连。
  *
  * 端点选择：组合流入口 `/stream` 实测比 `/ws` 稳定（4/4 vs 2/4），
  * 且与之一样支持连接后发送 SUBSCRIBE 消息，所以统一走 `/stream`：
  * 订阅集合变化时只发送增量 SUBSCRIBE / UNSUBSCRIBE，无需重建连接。
+ *
+ * **关于"经常卡在重连中"**：本网络下对合约入口的握手其实是**高概率失败**的
+ * （实测连续建连：主域名约 2/10，常规域名 0/5），且失败一律表现为"挂满超时后才返回"。
+ * 既然没有成功率更高的备选域名可换，域名轮换只会平白多等一个超时窗口，
+ * 因此这里固定使用唯一可用入口，把**缩短握手超时 + 快速重试**作为主要恢复手段。
  *
  * 线程模型：HTTP 客户端回调线程只负责解析与回调 [listener]，不做阻塞操作；
  * 重连、看门狗与**所有 WebSocket 写操作**都由独立的单线程调度器驱动——
@@ -138,7 +149,7 @@ class BinanceWsClient(private val listener: Listener) {
     val isRunning: Boolean get() = running.get()
 
     /**
-     * 当前被服务端拒绝（隔离）的流名，例如 `["000usdt@trade", "000usdt@miniTicker"]`。
+     * 当前被服务端拒绝（隔离）的流名，例如 `["000usdt@aggTrade", "000usdt@miniTicker"]`。
      *
      * 由 [com.crypto.cryptowatch.data.MarketStreamService] 换算成"无法订阅的币种数"
      * 展示在状态栏，让用户能直接看出是哪个自选拖住了连接。
@@ -196,8 +207,14 @@ class BinanceWsClient(private val listener: Listener) {
      *              否则会清掉本地记录却不下发 UNSUBSCRIBE，与服务端状态不一致。
      */
     fun updateStreams(streams: Collection<String>, force: Boolean = false) {
-        // 被服务端拒绝过的流不再尝试，否则每次重连都会把连接重新打断
-        val target = streams.map { it.lower() }.filterNot { it in rejected }.toSet()
+        // 被服务端拒绝过的流不再尝试，否则每次重连都会把连接重新打断。
+        //
+        // **绝不能整体 lowercase**：合约流名的后缀是驼峰的（`@aggTrade` / `@miniTicker`），
+        // 实测把小写形式 `@aggtrade` / `@miniticker` 发给服务端，会收到 `{"result":null}`
+        // 的 ack 却**永远不推送任何数据帧**（既无 error、也不断连），
+        // 表现正是「状态栏显示已连接、但推送一直是 0、价格不跳动」。
+        // 因此只对 `@` 之前的交易对部分做小写归一，后缀原样保留，见 [Symbols.normalizeStreamName]。
+        val target = streams.map { Symbols.normalizeStreamName(it) }.filterNot { it in rejected }.toSet()
         desired.clear()
         desired.addAll(target)
 
@@ -234,7 +251,9 @@ class BinanceWsClient(private val listener: Listener) {
         httpClient.newWebSocketBuilder()
             .connectTimeout(Duration.ofSeconds(CONNECT_TIMEOUT_SECONDS))
             .buildAsync(URI.create(STREAM_URL), Handler())
-            .orTimeout(CONNECT_TIMEOUT_SECONDS + 4, TimeUnit.SECONDS)
+            // 只比握手超时多留 3 秒余量：实测失败场景**全部**是挂满超时才返回，
+            // 余量给多了只会让"重连中"的停留时间成倍拉长。
+            .orTimeout(CONNECT_TIMEOUT_SECONDS + 3, TimeUnit.SECONDS)
             .whenComplete { ws, error ->
                 if (error != null) {
                     listener.onState(ConnectionState.RECONNECTING, I18n.text("ws.connectFailed", rootMessage(error)))
@@ -491,9 +510,14 @@ class BinanceWsClient(private val listener: Listener) {
     private fun handleSubscriptionResult(map: Map<String, Any?>) {
         val error = Json.obj(map["error"]) ?: return
         val msg = Json.str(error, "msg") ?: "unknown error"
-        val data = Json.str(error, "data")?.lower().orEmpty()
+        // 服务端回显的流名大小写不保证与请求一致，双方都做同样的归一化再比较，
+        // 否则会漏掉真正被拒的那条流、隔离不干净。
+        val data = Json.str(error, "data")?.let { Symbols.normalizeStreamName(it) }.orEmpty()
 
-        val offending = desired.filter { it.lower() == data || (data.isNotEmpty() && data.contains(it.lower())) }
+        val offending = desired.filter {
+            val normalized = Symbols.normalizeStreamName(it)
+            normalized == data || (data.isNotEmpty() && data.contains(normalized))
+        }
         quarantine(offending, msg)
     }
 
@@ -523,7 +547,7 @@ class BinanceWsClient(private val listener: Listener) {
      *   24h 涨跌幅与成交额的口径（miniTicker 不含涨跌幅字段，用 (c-o)/o 计算，
      *   与交易所展示一致）。
      *
-     * 由于 `@trade` 帧不含 24h 统计，这里把最近一次 miniTicker 的统计值缓存到
+     * 由于 `@aggTrade` 帧不含 24h 统计，这里把最近一次 miniTicker 的统计值缓存到
      * [lastStats]，在成交帧上补齐涨跌幅与成交额——否则高频价格会把 24h 列冲成空白。
      *
      * 注意字段名大小写：组合流 `/stream` 在部分网关下会把字段名首字母**小写**
@@ -531,9 +555,10 @@ class BinanceWsClient(private val listener: Listener) {
      */
     private fun parseTicker(map: Map<String, Any?>): Quote? {
         val symbol = field(map, "s")?.upper() ?: return null
-        if (!symbol.endsWith("USDT")) return null
-        val base = symbol.removeSuffix("USDT")
-        if (base.isEmpty()) return null
+        // 合约里同一币种可能存在多个代码（例如 U 本位的 `BTCUSDT` 与币本位的 `BTCUSD_PERP`），
+        // 统一交给 [Symbols.splitStream] 反解析成 (基础币种, 计价币种)。
+        // 拿不到说明是不认识的计价币种，跳过而不是硬套 USDT。
+        val (base, quoteCcy) = Symbols.splitStream(symbol) ?: return null
 
         // 先尝试按 24h 精简行情解析（含最新价 c 与 24h 统计）
         val last = fieldNum(map, "c")
@@ -544,7 +569,7 @@ class BinanceWsClient(private val listener: Listener) {
                 id = symbol,
                 symbol = symbol,
                 base = base,
-                quote = "USDT",
+                quote = quoteCcy,
                 price = last,
                 changePct = if (open != null && open > 0.0) (last - open) / open * 100.0 else Double.NaN,
                 high24h = fieldNum(map, "h"),
@@ -553,7 +578,7 @@ class BinanceWsClient(private val listener: Listener) {
                 quoteVolume = fieldNum(map, "q"),
                 volumeIsQuote = false,
                 sourceId = SOURCE_ID,
-                category = MarketCategory.SPOT
+                category = MarketCategory.FUTURES
             )
             lastStats[symbol] = quote
             return quote
@@ -567,7 +592,7 @@ class BinanceWsClient(private val listener: Listener) {
             id = symbol,
             symbol = symbol,
             base = base,
-            quote = "USDT",
+            quote = quoteCcy,
             price = traded,
             changePct = stats?.changePct ?: Double.NaN,
             high24h = stats?.high24h,
@@ -576,7 +601,7 @@ class BinanceWsClient(private val listener: Listener) {
             quoteVolume = stats?.quoteVolume,
             volumeIsQuote = false,
             sourceId = SOURCE_ID,
-            category = MarketCategory.SPOT
+            category = MarketCategory.FUTURES
         )
     }
 
@@ -608,12 +633,17 @@ class BinanceWsClient(private val listener: Listener) {
 
     companion object {
         /**
-         * 币安市场数据专用 WebSocket 入口。
+         * 币安**合约**市场数据 WebSocket 入口。
          *
-         * `stream.binance.com` 与 `fstream.binance.com` 在受限网络下不可达，
-         * 实测仅 `data-stream.binance.vision` 可连通（该域名的官方定位就是公开市场数据）。
+         * 实测（各自连续建连 10 次）：
+         * - `fstream.binancefuture.com` 成功率约 2/10，解析到 AWS 东京；
+         * - `fstream.binance.com` 成功率 **0/5**，被 DNS 污染到不可达的第三方 IP。
+         *
+         * 结论：**只保留唯一可用入口，不做域名轮换**。轮换到 0% 成功率的域名，
+         * 只会让每次重连都白白多等一个超时窗口，把"重连中"拉得更长。
+         * 连接不稳定本身靠缩短超时 + 快速重试化解（见 [CONNECT_TIMEOUT_SECONDS]）。
          */
-        const val STREAM_URL: String = "wss://data-stream.binance.vision/stream"
+        const val STREAM_URL: String = "wss://fstream.binancefuture.com/stream"
 
         /** 数据源标识，UI「来源」列会映射为可读名称。 */
         const val SOURCE_ID: String = "binance-ws"
@@ -624,12 +654,28 @@ class BinanceWsClient(private val listener: Listener) {
         private const val SUBSCRIBE_ID = 1
         private const val UNSUBSCRIBE_ID = 2
 
-        private const val CONNECT_TIMEOUT_SECONDS = 8L
+        /**
+         * 单次握手超时。
+         *
+         * 实测失败时**总是**挂满超时才返回（TCP 可连、TLS/WS 握手被静默丢弃），
+         * 这个值因此直接决定了每次失败浪费多久：8 秒会让"重连中"停留很久；
+         * 压到 4 秒后配合快速重试能明显更快连上（成功那次实测仅需 0.5~1 秒）。
+         */
+        private const val CONNECT_TIMEOUT_SECONDS = 4L
 
         /** 超过该时长没有收到任何数据帧，即判定连接静默失效并重连。 */
         private const val SILENCE_TIMEOUT_SECONDS = 20L
 
         private const val BASE_BACKOFF_SECONDS = 1L
-        private const val MAX_BACKOFF_SECONDS = 20L
+
+        /**
+         * 退避上限。
+         *
+         * 原值 20 秒过于保守：本网络下握手失败是**常态**（约 80%），
+         * 退避到 20 秒只会让用户长时间停在"重连中"。
+         * 改为 8 秒后，最坏情况下每分钟仍能尝试约 7 次，
+         * 既不至于高频重试触发限流，又能较快恢复。
+         */
+        private const val MAX_BACKOFF_SECONDS = 8L
     }
 }

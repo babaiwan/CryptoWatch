@@ -18,13 +18,17 @@ import com.crypto.cryptowatch.util.upper
  * 它按市值排序返回币种列表，字段包含 USD 价格、24h 涨跌、成交额、市值与排名，
  * 正好覆盖「币种列表 + 当前价格」这一核心需求；无需注册、无需 token。
  *
- * 接口说明：每页最多 100 条，通过 `start` 参数翻页。默认取 4 页（约 400 个币种，
- * 已覆盖全部主流币），对看盘而言足够。
+ * 接口说明：每页最多 100 条，通过 `start` 参数翻页。
  *
- * 由于翻页是串行请求，单页超时被压到 [PAGE_TIMEOUT_SECONDS]（3 秒）：
- * 正常网络下单页响应在数百毫秒级，最坏情况 4×3=12 秒也仍在聚合层的整体超时之内。
+ * **默认只取 1 页（100 条）**：翻页是**串行**请求，页数越多首次出数据越慢
+ * （4 页最坏 4×3=12 秒，而 1 页最快仅数百毫秒）。而「自选里的冷门币不在榜内」
+ * 这个问题并不依赖页数——[com.crypto.cryptowatch.data.MarketService.overlayLive]
+ * 会把「WebSocket 收到但 REST 列表没有」的币种自动补进来，因此自选币的实时价不受影响。
+ * 用 1 页换取显著更快的首屏与更短的阻塞时间，是更划算的取舍。
+ *
+ * 单页超时被压到 [PAGE_TIMEOUT_SECONDS]（3 秒）：正常网络下单页响应在数百毫秒级。
  */
-class CoinLoreSource(private val pages: Int = 4) : ExchangeDataSource {
+class CoinLoreSource(private val pages: Int = 1) : ExchangeDataSource {
 
     override val id = "coinlore"
     override val displayName: String get() = I18n.text("source.coinlore")
