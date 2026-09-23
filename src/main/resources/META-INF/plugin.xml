@@ -100,11 +100,13 @@
             serviceInterface="com.crypto.cryptowatch.data.MarketStreamService"
             serviceImplementation="com.crypto.cryptowatch.data.MarketStreamService"/>
 
+        <!-- 刻意不声明 icon：Marketplace 要求自定义图标必须同时提供
+             pluginIcon.svg 与 pluginIcon_dark.svg（40x40），否则会沿用 SDK 默认图标。
+             这里选择不提供图标，交由平台使用默认图标，也避免误用 SDK 模板图标。 -->
         <toolWindow
             id="CryptoWatch"
             anchor="right"
             secondary="false"
-            icon="/META-INF/pluginIcon.svg"
             factoryClass="com.crypto.cryptowatch.ui.MarketToolWindowFactory"/>
 
         <!-- 使用 implementation 而非 instance 属性：instance 是较新平台才支持的写法，
