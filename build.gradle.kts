@@ -10,7 +10,7 @@ plugins {
 group = "com.crypto"
 // 版本号必须递增：IDE 会拒绝安装与已装版本号相同的包
 // （报错 "plugin already contains version X in channel"）。
-version = "1.0.2"
+version = "1.0.3"
 
 repositories {
     mavenCentral()
@@ -50,7 +50,9 @@ intellijPlatform {
     pluginVerification {
         ides {
             create("IC", "2020.3")
-            recommended()
+            // 刻意不再调用 recommended()：它会另外解析 17 个 IDE（含尚未发布的版本，
+            // 例如 2025.3），任何一个在仓库中不存在都会让整个 verifyPlugin 直接失败，
+            // 而那些版本对本插件的兼容性没有参考价值——真正的护栏是最低支持版本 2020.3。
         }
     }
 
@@ -65,6 +67,8 @@ intellijPlatform {
 
         changeNotes = """
             <ul>
+                <li>1.0.3 - 修复「加入自选后一直卡在重连中」: 校验自选交易对并隔离被服务端拒绝的订阅流,
+                    不再因为一个非法币种导致整条连接反复断开; 新增中/英文界面切换（设置 > 工具 > CryptoWatch）.</li>
                 <li>1.0.2 - 移除插件图标（此前误用了 SDK 默认模板图标），改用平台默认图标.</li>
                 <li>1.0.1 - 修复自选不更新: 手动加入的币种（如 ZEC）会立即出现在列表中；
                     修复实时推送数虚高（只增不减的缓存），刷新时严格按当前自选重新订阅；

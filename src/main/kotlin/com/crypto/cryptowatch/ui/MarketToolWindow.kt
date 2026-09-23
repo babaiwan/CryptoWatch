@@ -36,8 +36,21 @@ class MarketToolWindow(
     private val statusLabel = JBLabel("")
     private val sourceStatusLabel = JBLabel("")
 
+    /** 工具栏按钮需要留存引用，语言切换时才能重设文字与提示。 */
+    private val refreshButton = JButton(I18n.text("toolbar.refresh"))
+    private val addButton = JButton(I18n.text("toolbar.add"))
+
     private var lastQuotes: List<Quote> = emptyList()
     private var liveCount: Int = 0
+
+    /**
+     * 最近一次快照。
+     *
+     * 语言切换时状态栏需要按新语言重画，而状态栏的文案（连接状态、"无实时行情"数量）
+     * 都来自快照而非当前选中行，因此必须留住最后一次快照；否则切换语言后状态栏
+     * 只能退化成默认文案。
+     */
+    private var lastSnapshot: MarketStreamService.DataSnapshot? = null
 
     /** 是否已向 [MarketStreamService] 注册（保证 addNotify/removeNotify 幂等）。 */
     private var streamRegistered = false
@@ -81,17 +94,19 @@ class MarketToolWindow(
     private fun buildToolbar(): JPanel {
         val panel = JPanel(FlowLayout(FlowLayout.LEFT, 4, 2))
 
-        panel.add(JButton("刷新列表").apply {
-            toolTipText = "按当前自选重新订阅实时行情，并重新拉取币种列表与市值"
+        refreshButton.apply {
+            toolTipText = I18n.text("toolbar.refresh.tip")
             addActionListener {
-                statusLabel.text = "刷新中…"
+                statusLabel.text = I18n.text("status.refreshing")
                 streamService.refreshNow()
             }
-        })
-        panel.add(JButton("加入自选").apply {
-            toolTipText = "手动输入任意币种加入自选，自选币种会被自动订阅实时价；双击列表行可移出自选"
+        }
+        addButton.apply {
+            toolTipText = I18n.text("toolbar.add.tip")
             addActionListener { tickerPanel.promptAddToWatchlist() }
-        })
+        }
+        panel.add(refreshButton)
+        panel.add(addButton)
 
         return panel
     }
@@ -99,6 +114,7 @@ class MarketToolWindow(
     // ------------------------------------------------------------------ 数据流
 
     private fun applySnapshot(snapshot: MarketStreamService.DataSnapshot) {
+        lastSnapshot = snapshot
         lastQuotes = snapshot.quotes
         liveCount = snapshot.liveCount
         tickerPanel.applyQuotes(snapshot.quotes)
@@ -114,9 +130,9 @@ class MarketToolWindow(
     /** 全部数据源都失败时的可读提示。 */
     private fun buildEmptyHint(snapshot: MarketStreamService.DataSnapshot): String {
         val failures = snapshot.failures
-        if (failures.isEmpty()) return "暂无行情数据"
-        val detail = failures.joinToString("；") { "${it.sourceId}: ${it.message}" }
-        return "获取行情失败，请检查网络或代理设置（$detail）"
+        if (failures.isEmpty()) return I18n.text("empty.noData")
+        val detail = failures.joinToString("; ") { "${it.sourceId}: ${it.message}" }
+        return I18n.text("empty.fetchFailed", detail)
     }
 
     private fun onQuoteSelected(quote: Quote?) {
@@ -131,10 +147,14 @@ class MarketToolWindow(
 
         sourceStatusLabel.text = buildSourceText(snapshot, state)
 
-        val mode = if (settings.wsEnabled) "实时" else "快照"
+        val mode = I18n.text(if (settings.wsEnabled) "status.mode.live" else "status.mode.snapshot")
         // 注意：自选数量取自选本身，而不是 lastQuotes（那是全量行情，约 400 条）
         val watchCount = WatchlistStore.getInstance().allKeys().size
-        statusLabel.text = "$mode · 自选 $watchCount · 推送 $live"
+        // 「无实时行情」的币种必须显式提示：这些币种不会进入订阅，因此推送数会少于自选数，
+        // 若不解释，用户会误以为「订阅漏了」；而它恰恰是此前「一直卡在重连中」的可视化出口。
+        val unsupported = snapshot?.unsupportedCount ?: 0
+        val suffix = if (unsupported > 0) I18n.text("status.unsupported", unsupported) else ""
+        statusLabel.text = I18n.text("status.line", mode, watchCount, live) + suffix
     }
 
     /**
@@ -147,13 +167,13 @@ class MarketToolWindow(
         snapshot: MarketStreamService.DataSnapshot?,
         state: BinanceWsClient.ConnectionState?
     ): String {
-        if (snapshot == null) return "启动中"
+        if (snapshot == null) return I18n.text("ws.state.launching")
 
         return when (state) {
             null -> restText(snapshot)
-            BinanceWsClient.ConnectionState.CONNECTED -> "已连接"
-            BinanceWsClient.ConnectionState.CONNECTING -> "连接中"
-            BinanceWsClient.ConnectionState.RECONNECTING -> "重连中"
+            BinanceWsClient.ConnectionState.CONNECTED -> I18n.text("ws.state.connected")
+            BinanceWsClient.ConnectionState.CONNECTING -> I18n.text("ws.state.connecting")
+            BinanceWsClient.ConnectionState.RECONNECTING -> I18n.text("ws.state.reconnecting")
             BinanceWsClient.ConnectionState.STOPPED -> restText(snapshot)
         }
     }
@@ -161,8 +181,8 @@ class MarketToolWindow(
     /** 未启用 WebSocket 时，退化为只显示数据源健康度。 */
     private fun restText(snapshot: MarketStreamService.DataSnapshot): String {
         val total = snapshot.sourceResults.size
-        if (total == 0) return "加载中"
-        return "数据源 ${snapshot.successCount}/$total"
+        if (total == 0) return I18n.text("ws.state.loading")
+        return I18n.text("source.health", snapshot.successCount, total)
     }
 
     // ------------------------------------------------------------------ 设置 / 生命周期
@@ -220,5 +240,25 @@ class MarketToolWindow(
         detailPanel.refreshTheme()
         tickerPanel.repaintTable()
         updateStatusLine()
+    }
+
+    /**
+     * 供语言切换时调用（由 [SettingsNotifier.fireLanguageChanged] 广播）。
+     *
+     * 与 [refreshTheme] 的区别：主题切换只影响颜色，而语言切换要重设所有**文字**，
+     * 包括工具栏按钮、表格列名、搜索框占位符与状态栏。
+     * 这里刻意不重连行情——语言与数据无关，重连只会让状态栏闪一下。
+     */
+    fun refreshTexts() {
+        refreshButton.text = I18n.text("toolbar.refresh")
+        refreshButton.toolTipText = I18n.text("toolbar.refresh.tip")
+        addButton.text = I18n.text("toolbar.add")
+        addButton.toolTipText = I18n.text("toolbar.add.tip")
+
+        tickerPanel.refreshTexts()
+        detailPanel.refreshTexts()
+
+        // 状态栏文案由快照驱动，这里用最后一次快照重画一遍即可
+        updateStatusLine(lastSnapshot)
     }
 }

@@ -5,6 +5,7 @@ import com.crypto.cryptowatch.data.ExchangeDataSource
 import com.crypto.cryptowatch.data.Json
 import com.crypto.cryptowatch.model.MarketCategory
 import com.crypto.cryptowatch.model.Quote
+import com.crypto.cryptowatch.ui.I18n
 import com.crypto.cryptowatch.util.Http
 import com.crypto.cryptowatch.util.upper
 
@@ -23,8 +24,8 @@ class OkxSource(override val category: MarketCategory) : ExchangeDataSource {
     override val id: String =
         if (category == MarketCategory.FUTURES) "okx-swap" else "okx-spot"
 
-    override val displayName: String =
-        if (category == MarketCategory.FUTURES) "OKX 合约" else "OKX 现货"
+    override val displayName: String
+        get() = I18n.text(if (category == MarketCategory.FUTURES) "source.okx.futures" else "source.okx.spot")
 
     private val hosts = listOf(
         "https://aws.okx.com",

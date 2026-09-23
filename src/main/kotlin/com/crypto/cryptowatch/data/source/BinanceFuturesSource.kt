@@ -4,13 +4,14 @@ import com.crypto.cryptowatch.data.ExchangeDataSource
 import com.crypto.cryptowatch.data.Json
 import com.crypto.cryptowatch.model.MarketCategory
 import com.crypto.cryptowatch.model.Quote
+import com.crypto.cryptowatch.ui.I18n
 import com.crypto.cryptowatch.util.Http
 
 /** 币安 USDT 本位永续合约行情。 */
 class BinanceFuturesSource : ExchangeDataSource {
 
     override val id = "binance-futures"
-    override val displayName = "Binance 合约"
+    override val displayName: String get() = I18n.text("source.binance.futures")
     override val category = MarketCategory.FUTURES
 
     private val hosts = listOf(

@@ -4,6 +4,7 @@ import com.crypto.cryptowatch.data.ExchangeDataSource
 import com.crypto.cryptowatch.data.Json
 import com.crypto.cryptowatch.model.MarketCategory
 import com.crypto.cryptowatch.model.Quote
+import com.crypto.cryptowatch.ui.I18n
 import com.crypto.cryptowatch.util.Http
 import com.crypto.cryptowatch.util.upper
 
@@ -17,8 +18,8 @@ class GateSource(override val category: MarketCategory) : ExchangeDataSource {
     override val id: String =
         if (category == MarketCategory.FUTURES) "gate-futures" else "gate-spot"
 
-    override val displayName: String =
-        if (category == MarketCategory.FUTURES) "Gate 合约" else "Gate 现货"
+    override val displayName: String
+        get() = I18n.text(if (category == MarketCategory.FUTURES) "source.gate.futures" else "source.gate.spot")
 
     private val hosts = listOf(
         "https://api.gateio.ws",

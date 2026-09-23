@@ -32,8 +32,8 @@ class DetailPanel : JBPanel<DetailPanel>(BorderLayout()) {
     }
     private val changeLabel = JBLabel("—")
 
-    private val watchButton = JButton("自选")
-    private val tradeButton = JButton("交易")
+    private val watchButton = JButton(I18n.text("detail.button.watch"))
+    private val tradeButton = JButton(I18n.text("detail.button.trade"))
 
     private var currentQuote: Quote? = null
 
@@ -55,7 +55,7 @@ class DetailPanel : JBPanel<DetailPanel>(BorderLayout()) {
         row.add(tradeButton)
 
         watchButton.addActionListener { toggleWatchlist() }
-        tradeButton.toolTipText = "前往交易平台"
+        tradeButton.toolTipText = I18n.text("detail.tip.trade")
         tradeButton.addActionListener { BrowserUtil.browse(TRADE_URL) }
         return row
     }
@@ -80,13 +80,13 @@ class DetailPanel : JBPanel<DetailPanel>(BorderLayout()) {
     private fun renderQuote(quote: Quote) {
         titleLabel.text = quote.displaySymbol
         val inWatchlist = WatchlistStore.getInstance().contains(quote.category, quote.canonicalKey)
-        watchButton.text = if (inWatchlist) "已自选" else "自选"
-        watchButton.toolTipText = if (inWatchlist) "点击移出自选" else "点击加入自选"
+        watchButton.text = I18n.text(if (inWatchlist) "detail.button.watched" else "detail.button.watch")
+        watchButton.toolTipText = I18n.text(if (inWatchlist) "detail.tip.removeWatch" else "detail.tip.addWatch")
 
         if (quote.placeholder) {
             priceLabel.text = "—"
             changeLabel.text = "—"
-            titleLabel.toolTipText = "该币种暂无数据源返回，可能因网络不可达"
+            titleLabel.toolTipText = I18n.text("detail.placeholder.tip")
             priceLabel.toolTipText = null
             return
         }
@@ -94,8 +94,9 @@ class DetailPanel : JBPanel<DetailPanel>(BorderLayout()) {
         priceLabel.text = Format.price(quote.price)
         changeLabel.text = Format.pct(quote.changePct)
         // 更新时间不再占据界面空间，改为悬停查看
-        titleLabel.toolTipText = "更新时间: ${Format.time(quote.updatedAt)}"
-        priceLabel.toolTipText = "更新时间: ${Format.time(quote.updatedAt)}"
+        val updated = I18n.text("detail.tip.updated", Format.time(quote.updatedAt))
+        titleLabel.toolTipText = updated
+        priceLabel.toolTipText = updated
     }
 
     private fun toggleWatchlist() {
@@ -107,6 +108,21 @@ class DetailPanel : JBPanel<DetailPanel>(BorderLayout()) {
     /** 主题切换时刷新配色。 */
     fun refreshTheme() {
         currentQuote?.let { renderQuote(it) }
+    }
+
+    /**
+     * 语言切换后刷新文案。
+     *
+     * 没有选中币种时也要刷按钮文字（否则按钮会一直停留在旧语言）；
+     * 但一旦有选中行，[renderQuote] 会顺带把按钮与提示一并按新语言重画。
+     */
+    fun refreshTexts() {
+        tradeButton.text = I18n.text("detail.button.trade")
+        tradeButton.toolTipText = I18n.text("detail.tip.trade")
+        currentQuote?.let { renderQuote(it) } ?: run {
+            watchButton.text = I18n.text("detail.button.watch")
+            watchButton.toolTipText = I18n.text("detail.tip.addWatch")
+        }
     }
 
     companion object {

@@ -1,6 +1,7 @@
 package com.crypto.cryptowatch.settings
 
 import com.crypto.cryptowatch.model.MarketCategory
+import com.crypto.cryptowatch.util.Symbols
 import com.crypto.cryptowatch.util.upper
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.components.PersistentStateComponent
@@ -36,8 +37,25 @@ class WatchlistStore : PersistentStateComponent<WatchlistStore.State> {
 
     override fun loadState(state: State) {
         XmlSerializerUtil.copyBean(state, myState)
+        sanitize()
         notifyChanged()
     }
+
+    /**
+     * 清理自选里的非法条目。
+     *
+     * 早期版本对自选内容不做任何校验，于是配置里可能残留 `000`、`BTC/USDT/test`
+     * 这类脏数据。它会被 [MarketStreamService] 翻译成 `000usdt@trade` 之类的**非法流名**
+     * 发给币安，服务端随即断开连接，客户端自动重连后又下发同一批非法流——
+     * 表现就是「加入自选后一直卡在重连中」。
+     *
+     * 只在加载阶段做还不够，因为写入口也要堵住（见 [add]）；但**必须**在这里做一次，
+     * 因为历史配置是既成事实，光靠输入校验无法挽救已经写入磁盘的脏数据。
+     *
+     * @return 是否发生了删除（用于决定是否需要落盘/通知）
+     */
+    private fun sanitize(): Boolean =
+        myState.entries.removeIf { entry -> parse(entry)?.second?.let { !Symbols.isValidKey(it) } ?: true }
 
     fun addListener(listener: () -> Unit) = listeners.add(listener)
 
@@ -60,14 +78,24 @@ class WatchlistStore : PersistentStateComponent<WatchlistStore.State> {
         return myState.entries.any { parse(it)?.second == target }
     }
 
+    /**
+     * 加入自选。
+     *
+     * **非法交易对一律拒收**（返回 false）：让脏数据根本进不了自选，
+     * 是「加入自选后一直重连」的第一道防线。调用方应先用 [Symbols.isValidKey]
+     * 区分「格式非法」与「已在自选中」，以给出不同的提示文案。
+     */
     fun add(category: MarketCategory, key: String): Boolean {
         val normalized = normalize(key)
+        if (!Symbols.isValidKey(normalized)) return false
         if (contains(category, normalized)) return false
         myState.entries.add(encode(category, normalized))
         notifyChanged()
         return true
     }
 
+    /** 与 [contains] 同理：类目只用于写入标记，删除时按规范化后的键匹配。 */
+    @Suppress("UNUSED_PARAMETER")
     fun remove(category: MarketCategory, key: String): Boolean {
         val target = normalize(key)
         val removed = myState.entries.removeIf { parse(it)?.second == target }

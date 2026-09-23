@@ -4,6 +4,7 @@ import com.crypto.cryptowatch.data.ExchangeDataSource
 import com.crypto.cryptowatch.data.Json
 import com.crypto.cryptowatch.model.MarketCategory
 import com.crypto.cryptowatch.model.Quote
+import com.crypto.cryptowatch.ui.I18n
 import com.crypto.cryptowatch.util.Http
 import com.crypto.cryptowatch.util.upper
 
@@ -13,7 +14,7 @@ import com.crypto.cryptowatch.util.upper
 class CoinCapSource(private val limit: Int = 150) : ExchangeDataSource {
 
     override val id = "coincap"
-    override val displayName = "CoinCap 市值榜"
+    override val displayName: String get() = I18n.text("source.coincap")
     override val category = MarketCategory.TOP
 
     override fun fetch(): List<Quote> {

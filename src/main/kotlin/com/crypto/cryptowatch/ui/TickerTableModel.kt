@@ -2,6 +2,7 @@ package com.crypto.cryptowatch.ui
 
 import com.crypto.cryptowatch.model.Quote
 import com.crypto.cryptowatch.util.Format
+import javax.swing.event.TableModelEvent
 import javax.swing.table.AbstractTableModel
 
 /**
@@ -12,11 +13,17 @@ import javax.swing.table.AbstractTableModel
  */
 class TickerTableModel : AbstractTableModel() {
 
-    enum class Column(val title: String, val width: Int, val numeric: Boolean) {
-        SYMBOL("币种", 110, false),
-        PRICE("最新价", 110, true),
-        CHANGE("24h涨跌", 90, true),
-        QUOTE_VOLUME("24h成交额", 120, true)
+    /**
+     * 列定义。
+     *
+     * 列名不再硬编码：这里只保存**文案键**，实际文字在 [getColumnName] 里按当前语言取，
+     * 这样切换语言时只需触发一次表头刷新（[refreshHeaders]），无需重建模型与排序器。
+     */
+    enum class Column(val titleKey: String, val width: Int, val numeric: Boolean) {
+        SYMBOL("column.symbol", 110, false),
+        PRICE("column.price", 110, true),
+        CHANGE("column.change", 90, true),
+        QUOTE_VOLUME("column.volume24h", 120, true)
     }
 
     private var rows: List<Quote> = emptyList()
@@ -25,7 +32,16 @@ class TickerTableModel : AbstractTableModel() {
 
     override fun getColumnCount(): Int = COLUMNS.size
 
-    override fun getColumnName(column: Int): String = COLUMNS[column].title
+    override fun getColumnName(column: Int): String = I18n.text(COLUMNS[column].titleKey)
+
+    /**
+     * 语言切换后刷新表头。
+     *
+     * 刻意发送 `HEADER_ROW` 事件而不是 `fireTableStructureChanged()`：后者的副作用是
+     * 重建所有 TableColumn，会把用户调整过的列宽与当前排序键一并重置；
+     * 而这里只是列名文字变了，结构并没有变化。
+     */
+    fun refreshHeaders() = fireTableChanged(TableModelEvent(this, TableModelEvent.HEADER_ROW))
 
     override fun getColumnClass(columnIndex: Int): Class<*> =
         if (COLUMNS[columnIndex].numeric) java.lang.Double::class.java else String::class.java

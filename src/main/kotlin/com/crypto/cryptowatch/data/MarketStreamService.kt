@@ -5,7 +5,8 @@ import com.crypto.cryptowatch.model.Quote
 import com.crypto.cryptowatch.model.SourceResult
 import com.crypto.cryptowatch.settings.CryptoSettings
 import com.crypto.cryptowatch.settings.WatchlistStore
-import com.crypto.cryptowatch.util.lower
+import com.crypto.cryptowatch.ui.I18n
+import com.crypto.cryptowatch.util.Symbols
 import com.crypto.cryptowatch.util.upper
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.components.Service
@@ -53,7 +54,15 @@ class MarketStreamService {
         val wsState: BinanceWsClient.ConnectionState?,
         val wsMessage: String,
         /** 当前订阅的流数量。 */
-        val streamCount: Int
+        val streamCount: Int,
+        /**
+         * 自选中无法订阅实时行情的币种数量。
+         *
+         * 两种来源：符号本身非法（脏数据），或曾被币安以 `Invalid symbol` 拒绝。
+         * 这类币种不会再出现在订阅里，只在列表中显示为占位行，必须显式告知用户，
+         * 否则界面会永远停在「重连中」而看不出是哪个币种的问题。
+         */
+        val unsupportedCount: Int
     ) {
         val failures: List<SourceResult.Failure> get() = sourceResults.filterIsInstance<SourceResult.Failure>()
         val successCount: Int get() = sourceResults.count { it is SourceResult.Success }
@@ -118,6 +127,9 @@ class MarketStreamService {
     @Volatile
     private var streamCount: Int = 0
 
+    @Volatile
+    private var unsupportedCount: Int = 0
+
     /** 保护 [started] / [refCount] 的锁。 */
     private val lock = Any()
 
@@ -162,6 +174,10 @@ class MarketStreamService {
             TimeUnit.SECONDS
         )
 
+        // 每次启用服务都清掉历史「被拒流」记录：币安对同一交易对的接受度会变化，
+        // 且用户可能已经改正了自选，重新尝试一次比永久拉黑更符合预期。
+        wsClient.resetRejections()
+
         refreshRest()
         if (CryptoSettings.getInstance().wsEnabled) startWs()
         emitNow()
@@ -191,6 +207,7 @@ class MarketStreamService {
         restResults = emptyList()
         restFetchedAt = 0L
         streamCount = 0
+        unsupportedCount = 0
     }
 
     /** 设置变更时调用：同步 WS 开关、订阅数量与数据源集合。 */
@@ -225,6 +242,10 @@ class MarketStreamService {
      * - 再拉 REST 则让列表与市值也刷新一遍。
      */
     fun refreshNow() {
+        // 手动刷新是用户明确的「重试」意图：清空历史被拒记录，
+        // 让此前被隔离的币种再试一次（若仍非法，会被再次隔离，不会形成死循环，
+        // 因为非法符号在 [desiredBases] 阶段就已经被剔除）。
+        wsClient.resetRejections()
         refreshSubscription(force = true)
         refreshRest()
     }
@@ -268,7 +289,7 @@ class MarketStreamService {
 
     private fun startWs() {
         wsState = BinanceWsClient.ConnectionState.CONNECTING
-        wsMessage = "连接中…"
+        wsMessage = I18n.text("ws.connecting")
         wsClient.start()
         scheduleResubscribe()
     }
@@ -299,14 +320,39 @@ class MarketStreamService {
      * 当前应当订阅的基础币种：由自选推导（统一大写、去重、受 [MAX_BASES] 上限约束）。
      *
      * 注意上限约束的是「币种数」——每个币种会占 2 条流（trade + miniTicker）。
+     *
+     * 关键前置过滤：只保留**符号合法**的自选键。把不存在的交易对（脏数据）写进 SUBSCRIBE
+     * 会让币安直接断开连接，客户端随即重连、又下发同一批非法流，于是界面永久停在「重连中」。
+     * 这里剔除后，非法自选只会表现为列表里的占位行，不再影响连接。
      */
     private fun desiredBases(limit: Int = MAX_BASES): Set<String> =
         WatchlistStore.getInstance().allKeys()
             .asSequence()
+            .filter { Symbols.isValidKey(it) }
             .mapNotNull { baseOf(it) }
-            .filter { it.isNotBlank() }
             .take(limit)
             .toSet()
+
+    /**
+     * 自选里「订阅不上」的币种数量 = 符号非法 + 被服务端拒绝。
+     *
+     * 仅用于状态栏提示。用户最困惑的场景就是「明明只有一个币有问题，界面却一直重连」，
+     * 把这个数量显示出来，问题就从"玄学"变成了"这一条数据有问题"。
+     */
+    private fun countUnsupported(): Int {
+        val keys = WatchlistStore.getInstance().allKeys()
+        val rejected = rejectedBases()
+        return keys.count { key ->
+            !Symbols.isValidKey(key) || (baseOf(key)?.let { it in rejected } == true)
+        }
+    }
+
+    /** 从 WS 客户端隔离的流名（形如 `btcusdt@trade`）反推出基础币种。 */
+    private fun rejectedBases(): Set<String> =
+        wsClient.rejectedStreams().mapNotNullTo(HashSet()) { stream ->
+            val idx = stream.indexOf("usdt@")
+            if (idx <= 0) null else stream.substring(0, idx).upper()
+        }
 
     /**
      * 按「自选」推导订阅流，并把结果推给 WS 客户端（只订阅自选币种）。
@@ -340,9 +386,10 @@ class MarketStreamService {
         // 看起来就像「价格几乎不动」。
         val streams = ArrayList<String>(bases.size * 2)
         bases.forEach { base ->
-            val symbol = "${base.lower()}usdt"
-            streams += "$symbol@trade"
-            streams += "$symbol@miniTicker"
+            // 统一由 [Symbols.binanceStream] 生成流名：它在拼装前会再校验一次符号，
+            // 任何非法组合都返回 null 并被跳过，绝不让脏数据到达服务端。
+            Symbols.binanceStream(base, suffix = "trade")?.let(streams::add)
+            Symbols.binanceStream(base, suffix = "miniTicker")?.let(streams::add)
         }
         // 先收窄允许范围，再下发订阅：这样即便服务端对 UNSUBSCRIBE 有延迟，
         // 残留推送也会在 [onQuotes] 里被丢弃。
@@ -386,6 +433,8 @@ class MarketStreamService {
 
     private fun buildSnapshot(): DataSnapshot {
         val merged = MarketService.overlayLive(restQuotes, liveQuotes)
+        val unsupported = countUnsupported()
+        unsupportedCount = unsupported
         return DataSnapshot(
             quotes = merged,
             sourceResults = restResults,
@@ -393,7 +442,8 @@ class MarketStreamService {
             liveCount = liveQuotes.size,
             wsState = wsState,
             wsMessage = wsMessage,
-            streamCount = streamCount
+            streamCount = streamCount,
+            unsupportedCount = unsupported
         )
     }
 

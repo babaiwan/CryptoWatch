@@ -55,6 +55,18 @@ object SettingsNotifier {
         }
     }
 
+    /**
+     * 界面语言切换后调用。
+     *
+     * 语言与主题在这一点上完全一致：已经创建出来的组件不会自动重取文案，
+     * 必须由窗口主动按新语言重新渲染一次（列名、工具栏、状态栏、右键菜单等）。
+     */
+    fun fireLanguageChanged() {
+        ApplicationManager.getApplication().invokeLater {
+            forEachWindow { it.refreshTexts() }
+        }
+    }
+
     private inline fun forEachWindow(action: (MarketToolWindow) -> Unit) {
         windows.removeAll { it.get() == null }
         windows.forEach { ref -> ref.get()?.let { runCatching { action(it) } } }

@@ -4,6 +4,7 @@ import com.crypto.cryptowatch.data.ExchangeDataSource
 import com.crypto.cryptowatch.data.Json
 import com.crypto.cryptowatch.model.MarketCategory
 import com.crypto.cryptowatch.model.Quote
+import com.crypto.cryptowatch.ui.I18n
 import com.crypto.cryptowatch.util.Http
 import com.crypto.cryptowatch.util.upper
 
@@ -22,7 +23,7 @@ import com.crypto.cryptowatch.util.upper
 class CoinGeckoSource(private val perPage: Int = 250) : ExchangeDataSource {
 
     override val id = "coingecko"
-    override val displayName = "CoinGecko 市值榜"
+    override val displayName: String get() = I18n.text("source.coingecko")
     override val category = MarketCategory.TOP
 
     /** 首选：字段完整（含 24h 涨跌）；次选：字段精简，仅保证价格与市值。 */

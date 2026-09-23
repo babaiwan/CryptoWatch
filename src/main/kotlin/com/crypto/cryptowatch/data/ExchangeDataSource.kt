@@ -17,7 +17,7 @@ interface ExchangeDataSource {
     /** 唯一 id，例如 "binance-spot"。 */
     val id: String
 
-    /** 人类可读名称，用于设置界面与状态栏。 */
+    /** 人类可读名称，用于设置界面与状态栏（按当前界面语言取值）。 */
     val displayName: String
 
     /** 该数据源所属类目。 */

@@ -31,6 +31,9 @@
             <li><b>Watchlist-only view</b>: the list shows only your watchlist by default and always
                 (BTC/ETH/SOL/BNB are preloaded). Double-click any row to add or remove it, and use the
                 search box to locate coins quickly inside the watchlist.</li>
+            <li><b>English / Chinese UI</b>: switch the interface language in
+                <code>Settings > Tools > CryptoWatch</code> (or follow the IDE). The change applies
+                immediately without restarting.</li>
             <li><b>Compact info panel</b>: select a coin to see its latest price, 24h change, turnover and
                 market cap.</li>
             <li><b>Reuses the IDE proxy</b>: the IDE's own HTTP proxy settings are used directly and are
@@ -66,6 +69,8 @@
                 并提示检查网络或代理，不再只留一片空白。</li>
             <li><b>只看自选</b>：列表默认且始终只展示自选币种（默认内置 BTC/ETH/SOL/BNB），
                 双击任意行即可加入/移出自选，搜索框可在自选范围内快速定位。</li>
+            <li><b>中英文界面</b>：在 <code>设置 > 工具 > CryptoWatch</code> 中切换界面语言
+                （也可跟随 IDE），切换后立即生效，无需重启。</li>
             <li><b>精简信息小框</b>：选中币种即可看到最新价、24h 涨跌、成交额与市值。</li>
             <li><b>复用 IDE 代理</b>：直接使用 IDE 自身的 HTTP 代理设置，WebSocket 长连接同样遵循，
                 无需重复配置；也支持在插件设置里单独指定代理。</li>

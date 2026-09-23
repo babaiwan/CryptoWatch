@@ -4,6 +4,7 @@ import com.crypto.cryptowatch.data.ExchangeDataSource
 import com.crypto.cryptowatch.data.Json
 import com.crypto.cryptowatch.model.MarketCategory
 import com.crypto.cryptowatch.model.Quote
+import com.crypto.cryptowatch.ui.I18n
 import com.crypto.cryptowatch.util.Http
 
 /**
@@ -19,7 +20,7 @@ import com.crypto.cryptowatch.util.Http
 class BinanceSpotSource : ExchangeDataSource {
 
     override val id = "binance-spot"
-    override val displayName = "Binance 现货"
+    override val displayName: String get() = I18n.text("source.binance.spot")
     override val category = MarketCategory.SPOT
 
     private val hosts = listOf(

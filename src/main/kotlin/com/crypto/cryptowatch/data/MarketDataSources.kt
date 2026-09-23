@@ -2,6 +2,7 @@ package com.crypto.cryptowatch.data
 
 import com.crypto.cryptowatch.data.source.CoinGeckoSource
 import com.crypto.cryptowatch.data.source.CoinLoreSource
+import com.crypto.cryptowatch.ui.I18n
 
 /**
  * 内置数据源注册表。
@@ -39,21 +40,23 @@ object MarketDataSources {
     fun byId(id: String): ExchangeDataSource? = all.firstOrNull { it.id == id }
 
     /**
-     * WebSocket 实时价的来源名称。
+     * WebSocket 实时价的来源 id。
      *
      * 它不是 [ExchangeDataSource]（不是通过 REST 批量拉取的源，而是长连接推送），
      * 因此不出现在 [all] 中，但同样需要在「来源」列展示可读名称。
      */
     private const val WS_SOURCE_ID = "binance-ws"
-    private const val WS_SOURCE_NAME = "Binance 实时(WS)"
 
     /**
      * 把数据源 id 映射为可读名称，供「来源」列与信息框展示。
      *
+     * 每次调用都实时取当前语言下的名称（不缓存常量），这样运行时切换语言后
+     * 列表里的「来源」列会跟着变，而不是永远停在启动时那一套文字。
+     *
      * 未知 id（例如历史配置里残留的交易所源）原样返回，避免展示为空。
      */
     fun displayNameOf(id: String): String = when (id) {
-        WS_SOURCE_ID -> WS_SOURCE_NAME
+        WS_SOURCE_ID -> I18n.text("source.ws")
         else -> byId(id)?.displayName ?: id
     }
 

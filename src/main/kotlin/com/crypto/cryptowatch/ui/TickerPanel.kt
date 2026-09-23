@@ -4,6 +4,7 @@ import com.crypto.cryptowatch.model.MarketCategory
 import com.crypto.cryptowatch.model.Quote
 import com.crypto.cryptowatch.settings.WatchlistStore
 import com.crypto.cryptowatch.util.Format
+import com.crypto.cryptowatch.util.Symbols
 import com.crypto.cryptowatch.util.lower
 import com.crypto.cryptowatch.util.upper
 import com.intellij.openapi.project.Project
@@ -49,9 +50,12 @@ class TickerPanel(
     private val sorter = TableRowSorter(model)
 
     private val searchField = JBTextField().apply {
-        emptyText.text = "搜索币种，如 BTC / ETH"
+        emptyText.text = I18n.text("ticker.search.empty")
     }
     private val hintLabel = JLabel("")
+
+    /** 搜索区前缀标签，语言切换时需要重设文字。 */
+    private val searchLabel = JLabel(I18n.text("ticker.search.label"))
 
     private var allQuotes: List<Quote> = emptyList()
 
@@ -134,11 +138,24 @@ class TickerPanel(
             override fun changedUpdate(e: javax.swing.event.DocumentEvent) = reapply()
         })
         val searchPanel = JPanel(FlowLayout(FlowLayout.RIGHT, 4, 0))
-        searchPanel.add(JLabel("搜索:"))
+        searchPanel.add(searchLabel)
         searchPanel.add(searchField)
         panel.add(searchPanel, BorderLayout.EAST)
 
         return panel
+    }
+
+    /**
+     * 语言切换后重设所有静态文案。
+     *
+     * 表格列名由 [TickerTableModel.refreshHeaders] 负责，代价很低（只发一次表头事件）；
+     * 而 [reapply] 会重新过滤并重建整张表，因此放在最后。
+     */
+    fun refreshTexts() {
+        searchLabel.text = I18n.text("ticker.search.label")
+        searchField.emptyText.text = I18n.text("ticker.search.empty")
+        model.refreshHeaders()
+        reapply()
     }
 
     // ------------------------------------------------------------------ 数据更新
@@ -178,11 +195,11 @@ class TickerPanel(
         model.setQuotes(displayed)
 
         hintLabel.text = when {
-            allQuotes.isEmpty() && filtered.isNotEmpty() -> "未获取到行情，以下为自选占位"
+            allQuotes.isEmpty() && filtered.isNotEmpty() -> I18n.text("ticker.hint.placeholder")
             allQuotes.isEmpty() && emptyHint != null -> emptyHint
             // 这里是「列表/搜索范围内的行情条数」，并非实时推送数，
             // 实时推送数由状态栏按当前订阅集合展示，避免两处口径互相矛盾。
-            else -> "自选 ${displayed.size} 个 · 行情 ${allQuotes.size} 条"
+            else -> I18n.text("ticker.hint.summary", displayed.size, allQuotes.size)
         }
         hintLabel.toolTipText = if (allQuotes.isEmpty()) emptyHint else null
     }
@@ -246,7 +263,13 @@ class TickerPanel(
 
     private fun toggleWatchlist(quote: Quote) {
         val added = WatchlistStore.getInstance().toggle(quote.category, quote.canonicalKey)
-        notifyStatus(if (added) "${quote.displaySymbol} 已加入自选" else "${quote.displaySymbol} 已移出自选")
+        notifyStatus(
+            if (added) {
+                I18n.text("ticker.status.added", quote.displaySymbol)
+            } else {
+                I18n.text("ticker.status.removed", quote.displaySymbol)
+            }
+        )
         onSelect(quote)
     }
 
@@ -254,30 +277,51 @@ class TickerPanel(
      * 通过输入框添加任意币种到自选（允许尚未被数据源返回的币种）。
      *
      * 只输入币种本身即可（例如 `ZEC`），默认按 `/USDT` 计价；也接受 `ZEC/USDT` 这类完整写法。
+     *
+     * 这里刻意做了三层校验，且**顺序很重要**：
+     * 1. [normalizeSymbol] 把 `ZEC` / `zecusdt` 之类的写法整理成 `ZEC/USDT`；
+     * 2. [Symbols.isValidKey] 判断格式是否合法——非法时直接拒绝并给出明确提示。
+     *    这一步是「加入自选后一直卡在重连中」的核心防线：把 `000` 这类不存在的交易对
+     *    写进自选，会被翻译成非法流名发给币安，服务端随即断连，而客户端会自动重连，
+     *    于是界面永久停在「重连中」；
+     * 3. 若数据源当前没有该币种，仍然允许加入（以占位行展示），但会额外提示"暂无实时行情"。
+     *    注：这类币种同样会影响实时订阅，但影响是**单个占位行**，不再造成重连循环，
+     *    因为 [com.crypto.cryptowatch.data.MarketStreamService] 会把它算作"无实时行情"。
      */
     fun promptAddToWatchlist() {
         val input = Messages.showInputDialog(
             project,
-            "输入币种，例如 ZEC（默认按 ZEC/USDT 计价），也可直接写 ZEC/USDT。",
-            "添加自选",
+            I18n.text("ticker.add.prompt"),
+            I18n.text("ticker.add.title"),
             null
         )?.trim() ?: return
         if (input.isEmpty()) return
 
         val key = normalizeSymbol(input) ?: run {
-            notifyStatus("无法识别的币种格式: $input")
+            notifyStatus(I18n.text("ticker.add.invalid", input))
             return
         }
         val normalized = WatchlistStore.normalize(key)
+        if (!Symbols.isValidKey(normalized)) {
+            notifyStatus(I18n.text("ticker.add.invalid", input))
+            return
+        }
+        // 允许加入「格式合法但当前数据源还没返回」的币种（例如新上币）。这类币种若被
+        // 币安判为不存在，订阅会被拒绝一次；[BinanceWsClient] 会把该流隔离并自动重连，
+        // 因此最多损失一个币种的实时价，不会再出现"整条连接一直重连"的情况。
+        val hasLive = allQuotes.any { WatchlistStore.normalize(it.canonicalKey) == normalized }
         val added = WatchlistStore.getInstance().add(MarketCategory.SPOT, normalized)
         if (!added) {
-            notifyStatus("$normalized 已在自选中")
+            notifyStatus(I18n.text("ticker.add.already", normalized))
             return
         }
         // 该币种可能尚未被任何数据源返回：此时列表里会以占位行出现，价格等列为 "-"。
-        val hasLive = allQuotes.any { WatchlistStore.normalize(it.canonicalKey) == normalized }
         notifyStatus(
-            if (hasLive) "$normalized 已加入自选" else "$normalized 已加入自选（暂无实时行情，等待数据源返回）"
+            if (hasLive) {
+                I18n.text("ticker.add.ok", normalized)
+            } else {
+                I18n.text("ticker.add.okNoLive", normalized)
+            }
         )
     }
 
@@ -308,13 +352,13 @@ class TickerPanel(
 
         val inWatchlist = WatchlistStore.getInstance().contains(quote.category, quote.canonicalKey)
         val menu = JPopupMenu()
-        menu.add(JMenuItem(if (inWatchlist) "移出自选" else "加入自选").apply {
+        menu.add(JMenuItem(I18n.text(if (inWatchlist) "ticker.ctx.remove" else "ticker.ctx.add")).apply {
             addActionListener { toggleWatchlist(quote) }
         })
-        menu.add(JMenuItem("复制币种").apply {
+        menu.add(JMenuItem(I18n.text("ticker.ctx.copySymbol")).apply {
             addActionListener { copyToClipboard(quote.displaySymbol) }
         })
-        menu.add(JMenuItem("复制最新价").apply {
+        menu.add(JMenuItem(I18n.text("ticker.ctx.copyPrice")).apply {
             addActionListener { copyToClipboard(Format.price(quote.price)) }
         })
         menu.show(table, e.x, e.y)

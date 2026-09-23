@@ -1,14 +1,26 @@
 package com.crypto.cryptowatch.model
 
+import com.crypto.cryptowatch.ui.I18n
 import com.crypto.cryptowatch.util.upper
 
 /**
  * 行情类目。同一个 [Quote] 可以被多个类目同时包含（例如 BTCUSDT 同时出现在现货与合约里）。
+ *
+ * 展示名不放在枚举构造参数里，而是在 [displayName] 中按当前语言实时获取：
+ * 枚举是单例，一旦把文案固化进枚举常量，运行时切换语言就永远看不到新文字。
  */
-enum class MarketCategory(val displayName: String) {
-    SPOT("现货"),
-    FUTURES("合约"),
-    TOP("市值榜");
+enum class MarketCategory {
+    SPOT,
+    FUTURES,
+    TOP;
+
+    /** 当前语言下的类目名（现货 / 合约 / 市值榜）。 */
+    val displayName: String
+        get() = when (this) {
+            SPOT -> I18n.text("category.spot")
+            FUTURES -> I18n.text("category.futures")
+            TOP -> I18n.text("category.top")
+        }
 
     companion object {
         /**
