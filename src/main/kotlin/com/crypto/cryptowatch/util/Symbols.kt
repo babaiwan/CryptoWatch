@@ -15,35 +15,93 @@ package com.crypto.cryptowatch.util
  */
 object Symbols {
 
-    /** 基础币种：1~15 位大写字母或数字，且必须以字母开头（排除 "000" 这类纯数字脏数据）。 */
-    private val BASE = Regex("^[A-Z][A-Z0-9]{0,14}$")
+    /**
+     * 币种名允许的字符：**按 Unicode 判断**字母与数字（`\p{L}` / `\p{N}`）。
+     *
+     * 早期实现写成 `^[A-Z][A-Z0-9]{0,14}$`（纯 ASCII），结果把中文币种（`龙虾USDT`）
+     * 与数字开头的币种（`4`、`1INCH` 之外的 `4` 这类）一并判为非法，表现为
+     * 「点击加自选毫无反应」——自选入口被输入校验直接拦掉。
+     *
+     * 交易所（币安/Gate/OKX）确实存在中文币种（例如 `龙虾`）与纯数字币种（例如 `4`），
+     * 因此这里必须按 Unicode 放行；同时仍禁止 `/`、空白、标点等，避免脏数据写进配置。
+     */
+    private val BASE = Regex("^[\\p{L}\\p{N}]{1,15}$")
 
-    /** 计价币种：同上，但限定为白名单（与 [com.crypto.cryptowatch.data.ExchangeDataSource.COMMON_QUOTES] 同源）。 */
-    private val QUOTES = Regex("^[A-Z][A-Z0-9]{1,9}$")
+    /** 计价币种：与基础币种同一套字符规则，长度略短。 */
+    private val QUOTES = Regex("^[\\p{L}\\p{N}]{1,10}$")
 
     /**
-     * 是否是合法的**基础币种**名。
+     * 「以 0 开头的纯数字占位/脏数据」判定（`0`、`00`、`000`）。
      *
-     * 币安允许数字出现在币种名中（例如 `1INCH`、`1000SHIB`），因此不能简单地
-     * 要求「全字母」；但必须排除纯数字（`000`）——那是典型的占位/脏数据。
+     * 纯数字币种本身是合法的（例如 `4`），必须放行；唯一要拦的是这种**全数字且以 0 打头**
+     * 的形式——它没有任何交易所会使用，是早期版本手工输入/占位残留的典型脏数据。
+     * 注意 `0X0` 这类含字母的名字不受影响。
+     */
+    private val LEADING_ZERO_DIGITS = Regex("^0\\p{N}*$")
+
+    /** 币安流名只接受 ASCII（`[a-z0-9]`）：非 ASCII 币种无法翻译成合法流名。 */
+    private val ASCII_STREAM = Regex("^[A-Z0-9]{1,15}$")
+
+    /**
+     * 是否是**可用于加入自选**的基础币种名。
+     *
+     * 允许任意 Unicode 字母/数字（含中文与纯数字），仅排除 `000` 这类前导零脏数据。
      */
     fun isBaseName(raw: String?): Boolean {
         val value = raw?.trim()?.upper() ?: return false
+        if (value.isEmpty() || LEADING_ZERO_DIGITS.matches(value)) return false
         return BASE.matches(value)
     }
 
     /** 是否是可用于组合交易对的计价币种名。 */
     fun isQuoteName(raw: String?): Boolean {
         val value = raw?.trim()?.upper() ?: return false
+        if (value.isEmpty() || LEADING_ZERO_DIGITS.matches(value)) return false
         return QUOTES.matches(value)
     }
 
-    /** 校验规范化后的自选键（形如 `BTC/USDT`）。 */
+    /** 校验规范化后的自选键（形如 `BTC/USDT`）。**决定能否加入自选**，允许中文与数字币种。 */
     fun isValidKey(key: String?): Boolean {
         val value = key?.trim() ?: return false
         val idx = value.indexOf('/')
         if (idx <= 0 || idx == value.length - 1) return false
         return isBaseName(value.substring(0, idx)) && isQuoteName(value.substring(idx + 1))
+    }
+
+    /**
+     * 是否是**可翻译成币安流名**的基础币种名（仅 ASCII 字母/数字）。
+     *
+     * 与 [isBaseName] 的区别：中文币种（`龙虾`）可以加入自选，但无法拼出合法的币安流名，
+     * 因此它不会进入实时订阅——否则会向服务端下发非法流。两层判断必须分开，见 [isSubscribableKey]。
+     */
+    fun isAsciiBaseName(raw: String?): Boolean {
+        val value = raw?.trim()?.upper() ?: return false
+        return ASCII_STREAM.matches(value) && !LEADING_ZERO_DIGITS.matches(value)
+    }
+
+    /**
+     * 是否是**可翻译成币安流名**的计价币种名。
+     *
+     * 计价币种只可能是 `USDT`/`USDC` 这类 ASCII 代码（中文计价币种在币安不存在），
+     * 因此这里比 [isQuoteName] 多一道 ASCII 限制。长度上限仍由 [isQuoteName] 保证。
+     */
+    fun isAsciiQuoteName(raw: String?): Boolean {
+        val value = raw?.trim()?.upper() ?: return false
+        return isQuoteName(value) && ASCII_STREAM.matches(value)
+    }
+
+    /**
+     * 是否是**可订阅实时行情**的自选键（形如 `BTC/USDT`）。
+     *
+     * 仅当基础币种与计价币种都是 ASCII 时成立。中文币种（`龙虾/USDT`）与纯数字币种
+     * （`4/USDT`）虽然可以加入自选，但**不能**订阅币安实时流：前者拼不出流名，后者在币安
+     * 合约网关上不存在，订阅了只会占位、甚至污染订阅集合。这类币种以占位行展示即可。
+     */
+    fun isSubscribableKey(key: String?): Boolean {
+        val value = key?.trim() ?: return false
+        val idx = value.indexOf('/')
+        if (idx <= 0 || idx == value.length - 1) return false
+        return isAsciiBaseName(value.substring(0, idx)) && isAsciiQuoteName(value.substring(idx + 1))
     }
 
     /**
@@ -59,10 +117,13 @@ object Symbols {
      * 不存在的流虽然不会像现货那样**断开连接**，但会静默不推送，表现为「有连接、没数据」，
      * 比断连更难排查，因此必须在源头剔除非法组合（返回 null）。
      *
+     * 基础币种必须能翻译成 ASCII 流名（见 [isAsciiBaseName]）：中文币种（`龙虾`）虽然可以
+     * 加入自选，但在这里返回 null，即**不订阅**——否则会向服务端下发非法流。
+     *
      * @param suffix 流名后缀。逐笔成交在合约里叫 `aggTrade`（不是现货的 `trade`）。
      */
     fun binanceStream(base: String, quote: String = "USDT", suffix: String = "aggTrade"): String? {
-        if (!isBaseName(base) || !isQuoteName(quote)) return null
+        if (!isAsciiBaseName(base) || !isAsciiQuoteName(quote)) return null
         val b = base.trim().lower()
         val q = quote.trim().lower()
         val pair = if (q == "usd") "${b}${q}_perp" else "$b$q"

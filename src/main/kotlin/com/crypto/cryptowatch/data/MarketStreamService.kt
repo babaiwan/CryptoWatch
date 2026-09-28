@@ -350,29 +350,34 @@ class MarketStreamService {
      *
      * 注意上限约束的是「币种数」——每个币种会占 2 条流（trade + miniTicker）。
      *
-     * 关键前置过滤：只保留**符号合法**的自选键。把不存在的交易对（脏数据）写进 SUBSCRIBE
-     * 会让币安直接断开连接，客户端随即重连、又下发同一批非法流，于是界面永久停在「重连中」。
-     * 这里剔除后，非法自选只会表现为列表里的占位行，不再影响连接。
+     * 关键前置过滤：只保留**能翻译成币安流名**的自选键（[Symbols.isSubscribableKey]）。
+     * 这里刻意比「能加入自选」（[Symbols.isValidKey]）更严：
+     * - 中文币种（`龙虾/USDT`）可以收藏、可以展示，但拼不出合法流名；
+     * - 纯数字币种（`4/USDT`）在币安合约上同样不存在。
+     * 若把它们也塞进 SUBSCRIBE，只会白白占用订阅名额、并可能让网关静默不推送；
+     * 剔除后它们仅以列表占位行出现，既不影响连接，也不再是「加了却没反应」。
      */
     private fun desiredBases(limit: Int = MAX_BASES): Set<String> =
         WatchlistStore.getInstance().allKeys()
             .asSequence()
-            .filter { Symbols.isValidKey(it) }
+            .filter { Symbols.isSubscribableKey(it) }
             .mapNotNull { baseOf(it) }
             .take(limit)
             .toSet()
 
     /**
-     * 自选里「订阅不上」的币种数量 = 符号非法 + 被服务端拒绝。
+     * 自选里「拿不到实时行情」的币种数量 = 无法订阅 + 被服务端拒绝。
      *
-     * 仅用于状态栏提示。用户最困惑的场景就是「明明只有一个币有问题，界面却一直重连」，
-     * 把这个数量显示出来，问题就从"玄学"变成了"这一条数据有问题"。
+     * 这里用 [Symbols.isSubscribableKey] 而非 [Symbols.isValidKey]：中文币种（`龙虾/USDT`）
+     * 与纯数字币种（`4/USDT`）本身可以正常收藏，但它们**本来就不可能有实时行情**，
+     * 属于该计数要覆盖的场景——只有把它们算进来，状态栏「无实时行情 N 个」才与实际一致，
+     * 用户也才能理解「为什么这个币加了却没有价格」。
      */
     private fun countUnsupported(): Int {
         val keys = WatchlistStore.getInstance().allKeys()
         val rejected = rejectedBases()
         return keys.count { key ->
-            !Symbols.isValidKey(key) || (baseOf(key)?.let { it in rejected } == true)
+            !Symbols.isSubscribableKey(key) || (baseOf(key)?.let { it in rejected } == true)
         }
     }
 
