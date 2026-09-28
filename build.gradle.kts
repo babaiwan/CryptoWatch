@@ -10,7 +10,7 @@ plugins {
 group = "com.crypto"
 // 版本号必须递增：IDE 会拒绝安装与已装版本号相同的包
 // （报错 "plugin already contains version X in channel"）。
-version = "1.0.7"
+version = "1.0.10"
 
 repositories {
     mavenCentral()
@@ -67,6 +67,10 @@ intellijPlatform {
 
         changeNotes = """
             <ul>
+                <li>1.0.10 - 修复中文/数字合约无法加入自选: 币种名校验由纯 ASCII
+                    放宽为 Unicode 字母/数字, 支持 `龙虾`、`4` 这类币种; 同时把
+                    「能否加入自选」与「能否订阅实时流」两个判断拆开——非 ASCII
+                    币种可正常收藏并以占位行展示, 但不会向币安下发非法订阅流.</li>
                 <li>1.0.7 - 修复「已连接但推送 0 / 价格不跳动」: 订阅流名被整体转成小写,
                     导致合约后缀 `@aggTrade`/`@miniTicker` 变成服务端不认的小写形式——
                     虽回订阅成功但永不推送; 现仅对交易对部分小写, 后缀保持原样.</li>
